@@ -66,6 +66,7 @@ class ForceControlNode(Node):
                 'error_before': 0.0,
                 'hold_pos': start_pos[a],
                 'hold_time': 0.0,
+                'next_checkpoint': 0.0,
             }
 
         # ========== 100Hz 控制定时器 ==========
@@ -105,6 +106,8 @@ class ForceControlNode(Node):
                 'start_delay': self.get_parameter(f'{a}_start_delay').value,
                 'force_field': self.get_parameter(f'{a}_force_field').value,
                 'force_sign': self.get_parameter(f'{a}_force_sign').value,
+                'force_step': self.get_parameter(f'{a}_force_step').value,
+                'step_dwell': self.get_parameter(f'{a}_step_dwell').value,
             }
             self.cfg[a]['force_limit'] = (
                 self.cfg[a]['target'] * 3.0 if a in ('x', 'y')
@@ -184,6 +187,8 @@ class ForceControlNode(Node):
 
         if st['phase'] == 'APPROACH':
             self._axis_evaluate_approach(axis)
+        elif st['phase'] == 'STEP_DWELL':
+            self._axis_step_dwell(axis)
         elif st['phase'] == 'FINE_TUNE_WAIT':
             self._axis_evaluate_fine_tune(axis)
         elif st['phase'] == 'RECOVER_WAIT':
@@ -215,6 +220,7 @@ class ForceControlNode(Node):
         st['wait_ctr'] = 0
         st['prev_force'] = abs(self._get_force(axis))
         st['prev_pos'] = st['pos']
+        st['next_checkpoint'] = cfg.get('force_step', 0)
         return True
 
     # ---------- 逼近评估 ----------
@@ -223,6 +229,18 @@ class ForceControlNode(Node):
         st = self.ax[axis]
         f = self._get_force(axis)
         f_abs = abs(f)
+
+        # 力值阶梯模式：检测是否到达下一个台阶
+        force_step = cfg.get('force_step', 0)
+        if force_step > 0 and f_abs >= st['next_checkpoint']:
+            dwell = cfg.get('step_dwell', 50)
+            self.get_logger().info(
+                f'[{axis.upper()}] 阶梯 {st["next_checkpoint"]:.1f}N 到达 → 静置 {dwell} 周期'
+            )
+            st['phase'] = 'STEP_DWELL'
+            st['wait_ctr'] = dwell
+            self._publish_cartepos()
+            return
 
         if f_abs >= cfg['target']:
             e_prev = abs(cfg['target'] - st['prev_force'])
@@ -254,6 +272,24 @@ class ForceControlNode(Node):
             self._axis_do_step(axis, cfg['approach'], cfg['coarse_wait'], tag='粗')
         else:
             self._axis_do_step(axis, cfg['step'], cfg['fine_wait'], tag='细')
+
+    # ---------- 台阶静置 ----------
+    def _axis_step_dwell(self, axis):
+        st = self.ax[axis]
+        cfg = self.cfg[axis]
+        force_step = cfg.get('force_step', 0)
+        st['next_checkpoint'] += force_step
+        if st['next_checkpoint'] >= cfg['target']:
+            self.get_logger().info(
+                f'[{axis.upper()}] 台阶静置完成 → 继续逼近最终目标 {cfg["target"]:.1f}N'
+            )
+            st['next_checkpoint'] = cfg['target']
+        else:
+            self.get_logger().info(
+                f'[{axis.upper()}] 台阶静置完成 → 下一台阶 {st["next_checkpoint"]:.1f}N'
+            )
+        st['phase'] = 'APPROACH'
+        st['wait_ctr'] = 0
 
     # ---------- 精调评估 ----------
     def _axis_evaluate_fine_tune(self, axis):
