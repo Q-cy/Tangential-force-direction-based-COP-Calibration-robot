@@ -1,1 +1,0 @@
-/home/qcy/ros2_project_ws/src/rm_75_calibration/setup.py

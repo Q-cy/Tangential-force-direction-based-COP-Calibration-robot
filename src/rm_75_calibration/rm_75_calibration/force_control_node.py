@@ -235,7 +235,7 @@ class ForceControlNode(Node):
         if force_step > 0 and f_abs >= st['next_checkpoint']:
             dwell = cfg.get('step_dwell', 50)
             self.get_logger().info(
-                f'[{axis.upper()}] 阶梯 {st["next_checkpoint"]:.1f}N 到达 → 静置 {dwell} 周期'
+                f'[{axis.upper()}] 阶梯 {st["next_checkpoint"]:.1f}N 到达 (实际={f_abs:.2f}N) → 静置 {dwell} 周期'
             )
             st['phase'] = 'STEP_DWELL'
             st['wait_ctr'] = dwell
