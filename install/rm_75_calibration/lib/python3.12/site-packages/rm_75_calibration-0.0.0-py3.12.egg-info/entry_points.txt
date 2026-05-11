@@ -1,0 +1,6 @@
+[console_scripts]
+force_control_node = rm_75_calibration.force_control_node:main
+force_control_xz_node = rm_75_calibration.force_control_xz_node:main
+force_control_z_node = rm_75_calibration.force_control_z_node:main
+force_sensor_node = rm_75_calibration.force_sensor_node:main
+rm_cali_v1 = rm_75_calibration.rm_cali_v1:main

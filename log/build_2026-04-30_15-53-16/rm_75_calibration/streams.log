@@ -1,0 +1,20 @@
+[0.595s] Invoking command in '/home/qcy/ros2_project_ws/build/rm_75_calibration': PYTHONPATH=/home/qcy/ros2_project_ws/build/rm_75_calibration/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/qcy/ros2_project_ws/install/rm_75_calibration/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/qcy/ros2_project_ws/build/rm_75_calibration/build --no-deps symlink_data
+[0.755s] running develop
+[0.855s] running egg_info
+[0.863s] writing rm_75_calibration.egg-info/PKG-INFO
+[0.863s] writing dependency_links to rm_75_calibration.egg-info/dependency_links.txt
+[0.863s] writing entry points to rm_75_calibration.egg-info/entry_points.txt
+[0.863s] writing requirements to rm_75_calibration.egg-info/requires.txt
+[0.863s] writing top-level names to rm_75_calibration.egg-info/top_level.txt
+[0.884s] reading manifest file 'rm_75_calibration.egg-info/SOURCES.txt'
+[0.885s] writing manifest file 'rm_75_calibration.egg-info/SOURCES.txt'
+[0.897s] running build_ext
+[0.897s] Creating /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/python3.12/site-packages/rm-75-calibration.egg-link (link to .)
+[0.897s] Installing force_control_xz_node script to /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/rm_75_calibration
+[0.897s] Installing force_control_z_node script to /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/rm_75_calibration
+[0.898s] Installing force_sensor_node script to /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/rm_75_calibration
+[0.898s] Installing rm_cali_v1 script to /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/rm_75_calibration
+[0.898s] 
+[0.898s] Installed /home/qcy/ros2_project_ws/build/rm_75_calibration
+[0.898s] running symlink_data
+[0.915s] Invoked command in '/home/qcy/ros2_project_ws/build/rm_75_calibration' returned '0': PYTHONPATH=/home/qcy/ros2_project_ws/build/rm_75_calibration/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/qcy/ros2_project_ws/install/rm_75_calibration/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/qcy/ros2_project_ws/build/rm_75_calibration/build --no-deps symlink_data
