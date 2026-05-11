@@ -19,6 +19,11 @@ SENSOR_COLS = 7                         # 传感器阵列列数
 LINE_DIST_THRESHOLD = 0.1               # 点到直线最大允许距离 (CoP单位)
 DIR_DOT_THRESHOLD = 0.7                 # 方向一致性最小点积 cos(夹角)
 
+# ===================== 二次静置精修参数 =====================
+POST_INIT_WINDOW = 100                  # 初始 CoP 确定后监测帧数
+POST_INIT_STABLE_COUNT = 50             # 需要连续保持不变的帧数
+POST_INIT_STABLE_THRESHOLD = 0.1        # "几乎不变"判据：CoP 偏移距离阈值
+
 
 # ===================== 线程安全全局状态 =====================
 first_frame = None                      # 第一帧基线
@@ -36,6 +41,13 @@ initial_cop_y_buffer = deque(maxlen=COP_STABILITY_FRAMES_REQUIRED)
 # 因为新的逻辑直接依赖于 initial_cop_x_buffer 的内容和长度来判断稳定性。
 
 total_pressure_low_counter = 0           # 压力低于阈值计数器
+
+# 二次静置精修状态
+post_init_frame_counter = 0              # contact_initialized 之后的帧计数
+post_init_stable_counter = 0             # 连续稳定帧计数
+post_init_refined = False                # 是否已完成精修
+post_init_candidate_x = None             # 候选静止点 X
+post_init_candidate_y = None             # 候选静止点 Y
 
 adc_filtered_dir = None                  # 滤波后的方向向量
 grad_table_data = np.zeros((12, 7, 2))   # 梯度表（用于绘图）
@@ -67,14 +79,21 @@ def reset_cop_state():
     global adc_filtered_dir, first_contact_CoP_x, first_contact_CoP_y, contact_initialized
     global total_pressure_low_counter
     global initial_cop_x_buffer, initial_cop_y_buffer, grad_table_data
+    global post_init_frame_counter, post_init_stable_counter, post_init_refined
+    global post_init_candidate_x, post_init_candidate_y
 
     adc_filtered_dir = None
     first_contact_CoP_x = None
     first_contact_CoP_y = None
     contact_initialized = False
     total_pressure_low_counter = 0
-    initial_cop_x_buffer.clear()         # 清空缓冲器
-    initial_cop_y_buffer.clear()         # 清空缓冲器
+    initial_cop_x_buffer.clear()
+    initial_cop_y_buffer.clear()
+    post_init_frame_counter = 0
+    post_init_stable_counter = 0
+    post_init_refined = False
+    post_init_candidate_x = None
+    post_init_candidate_y = None
     with grad_table_lock:
         grad_table_data.fill(0)
 
@@ -89,6 +108,8 @@ def compute_pressure_direction(baseline_subtracted_frame):
     global first_contact_CoP_x, first_contact_CoP_y, contact_initialized
     global total_pressure_low_counter
     global initial_cop_x_buffer, initial_cop_y_buffer
+    global post_init_frame_counter, post_init_stable_counter, post_init_refined
+    global post_init_candidate_x, post_init_candidate_y
 
     rows, cols = SENSOR_ROWS, SENSOR_COLS
     frame_flat = np.asarray(baseline_subtracted_frame, dtype=np.float32).flatten()
@@ -228,8 +249,32 @@ def compute_pressure_direction(baseline_subtracted_frame):
 
     # ========== 计算偏移量 ==========
     else:  # contact_initialized 为 True
+        # --- 二次静置精修：检测静止，修正初始 CoP ---
+        post_init_frame_counter += 1
+        if not post_init_refined and post_init_frame_counter <= POST_INIT_WINDOW:
+            if post_init_candidate_x is not None:
+                dist = np.hypot(cop_x - post_init_candidate_x,
+                                cop_y - post_init_candidate_y)
+                if dist <= POST_INIT_STABLE_THRESHOLD:
+                    post_init_stable_counter += 1
+                else:
+                    post_init_candidate_x = cop_x
+                    post_init_candidate_y = cop_y
+                    post_init_stable_counter = 1
+            else:
+                post_init_candidate_x = cop_x
+                post_init_candidate_y = cop_y
+                post_init_stable_counter = 1
+
+            if post_init_stable_counter >= POST_INIT_STABLE_COUNT:
+                first_contact_CoP_x = post_init_candidate_x
+                first_contact_CoP_y = post_init_candidate_y
+                post_init_refined = True
+        else:
+            post_init_refined = True  # 超时或已完成，不再监测
+
         delta_CoP_x = cop_x - first_contact_CoP_x
-        delta_CoP_y =  first_contact_CoP_y-cop_y 
+        delta_CoP_y =  first_contact_CoP_y-cop_y
         base_CoP_x_for_plot = first_contact_CoP_x
         base_CoP_y_for_plot = first_contact_CoP_y
 

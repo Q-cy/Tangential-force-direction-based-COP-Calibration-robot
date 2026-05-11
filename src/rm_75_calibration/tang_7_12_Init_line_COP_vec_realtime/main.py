@@ -20,6 +20,7 @@ import COP as COP
 import data as data
 import realtime as realtime
 import table as table
+import calibrate
 
 # ===================== 配置 =====================
 SAVE_DIR = "/home/qcy/Project/data/2.PZT_tangential/weight/test"
@@ -97,6 +98,21 @@ def data_loop(force_node):
     print("🎨 绘图已打开")
     t0 = time.perf_counter()
 
+    # 尝试加载标定插值器
+    cal_path = os.path.join(SAVE_DIR, "cal_interp.pkl")
+    cal_ready = False
+    interp_fx, interp_fy = None, None
+    if os.path.exists(cal_path):
+        try:
+            interp_fx, interp_fy = calibrate.load_interpolator(cal_path)
+            cal_ready = True
+            print(f"📐 标定插值器已加载: {cal_path}")
+        except Exception as e:
+            print(f"⚠️ 标定插值器加载失败: {e}")
+    else:
+        print("💡 未找到标定文件 cal_interp.pkl。如需标定：")
+        print("   python calibrate.py <N>")
+
     # 中值滤波窗口（窗口大小=5）
     MEDIAN_WINDOW = 5
     buf_dx = deque(maxlen=MEDIAN_WINDOW)
@@ -143,6 +159,13 @@ def data_loop(force_node):
         # 计算角度和幅值（使用滤波后的值）
         adc_angle, adc_mag = angle.compute_PZT_angle(dx_f, dy_f)
         force_angle, force_mag = angle.compute_6Dforce_angle(fx_f, fy_f)
+
+        # 标定：CoP位移 → 切向力（插值）
+        if cal_ready:
+            fx_cal, fy_cal = calibrate.apply(dx_f, dy_f, interp_fx, interp_fy)
+            cal_angle, cal_mag = angle.compute_vector_angle(fx_cal, fy_cal)
+        else:
+            fx_cal, fy_cal, cal_angle, cal_mag = None, None, None, None
         
         # 构造CSV行数据（调用封装函数）
         csv_row = table.build_csv_row(
@@ -158,7 +181,11 @@ def data_loop(force_node):
             adc_angle=adc_angle,
             adc_mag=adc_mag,
             force_angle=force_angle,
-            force_mag=force_mag
+            force_mag=force_mag,
+            fx_cal=fx_cal,
+            fy_cal=fy_cal,
+            force_cal_mag=cal_mag,
+            force_cal_angle=cal_angle,
         )
         
         # 写入CSV行
@@ -170,11 +197,13 @@ def data_loop(force_node):
             adc_angle, adc_mag, force_angle, force_mag,
             base, np.sum(press_data_item["data"]), force_mag,
             cx, cy, bx, by, dx_f, dy_f,  # 滤波后 delta_cop_x, delta_cop_y
-            fx_f, fy_f  # 滤波后 force_fx, force_fy
+            fx_f, fy_f,  # 滤波后 force_fx, force_fy
+            fx_cal, fy_cal, cal_angle, cal_mag,  # 标定力
         )
         # 追加全程数据
-        if COP.contact_initialized: 
-                    plot.append_full_data(rel_ms, adc_mag, force_mag) 
+        if COP.contact_initialized:
+                    plot.append_full_data(rel_ms, adc_mag, force_mag, cal_mag,
+                                          fx_f, fy_f, fx_cal, fy_cal)
         
         # 控制采集频率
         elapsed = time.perf_counter() - now

@@ -29,7 +29,9 @@ CSV_HEADER = [
     # 新增 Force 分量
     "delta_Force_X", "delta_Force_Y", # <--- ADDED THESE TWO LINES
     # 角度和幅值
-    "ADC_angle", "ADC_mag", "Force_angle", "Force_mag"
+    "ADC_angle", "ADC_mag", "Force_angle", "Force_mag",
+    # 标定后的切向力
+    "Fx_cal", "Fy_cal", "Force_cal_mag", "Force_cal_angle"
 ]
 
 def auto_get_csv_path(save_dir: str) -> str:
@@ -69,7 +71,11 @@ def build_csv_row(
     adc_angle: float,        # ADC角度
     adc_mag: float,          # ADC幅值
     force_angle: float,      # 力传感器角度
-    force_mag: float         # 力传感器幅值
+    force_mag: float,        # 力传感器幅值
+    fx_cal: float = None,    # 标定后切向力 X (N)
+    fy_cal: float = None,    # 标定后切向力 Y (N)
+    force_cal_mag: float = None,   # 标定后幅值 (N)
+    force_cal_angle: float = None, # 标定后角度 (deg)
 ) -> list:
     """
     构造符合表头格式的CSV行数据
@@ -94,6 +100,10 @@ def build_csv_row(
         adc_angle,               # ADC_angle：PZT计算的角度
         adc_mag,                 # ADC_mag：CoP偏移幅值
         force_angle,             # Force_angle：力传感器计算的角度
-        force_mag                # Force_mag：力传感器幅值
+        force_mag,               # Force_mag：力传感器幅值
+        fx_cal if fx_cal is not None else float('nan'),
+        fy_cal if fy_cal is not None else float('nan'),
+        force_cal_mag if force_cal_mag is not None else float('nan'),
+        force_cal_angle if force_cal_angle is not None else float('nan'),
     ]
     return csv_row

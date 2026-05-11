@@ -36,6 +36,11 @@ class RealTimePlot:
         self.full_time_list = []          # 存储全程时间戳 (ms)
         self.full_adc_mag_list = []       # 存储全程 CoP 偏移幅值
         self.full_force_mag_list = []     # 存储全程力传感器幅值
+        self.full_cal_mag_list = []       # 存储全程标定力幅值
+        self.full_fx_list = []            # 全程实测 Fx
+        self.full_fy_list = []            # 全程实测 Fy
+        self.full_fx_cal_list = []        # 全程标定 Fx
+        self.full_fy_cal_list = []        # 全程标定 Fy
 
         self.fig = plt.figure(figsize=(16, 12))
         self.build_layout()
@@ -58,8 +63,18 @@ class RealTimePlot:
         self.base_cop_y = 0.0
         self.delta_cop_x = 0.0
         self.delta_cop_y = 0.0
-        self.raw_fx = 0.0 # 新增
-        self.raw_fy = 0.0 # 新增
+        self.raw_fx = 0.0
+        self.raw_fy = 0.0
+        self.fx_cal = None      # 标定力 X
+        self.fy_cal = None      # 标定力 Y
+        self.cal_angle = None
+        self.cal_mag = None
+
+        # 图右上方 Force/Cal 信息文本
+        self.force_info_text = self.fig.text(0.52, 0.97, "", transform=self.fig.transFigure,
+                                              fontsize=12, color='red', va='top', ha='left', weight='bold')
+        self.cal_info_text = self.fig.text(0.78, 0.97, "", transform=self.fig.transFigure,
+                                            fontsize=12, color='green', va='top', ha='left', weight='bold')
 
     def build_layout(self):
         # 调整GridSpec以容纳更多图表
@@ -101,11 +116,13 @@ class RealTimePlot:
         self.ax_force_fx.set_title("Force_Fx Magnitude", fontsize=10)
         self.ax_force_fx.grid(True, alpha=0.3)
         self.line_force_fx, = self.ax_force_fx.plot([], [], 'r-', linewidth=1.5)
+        self.line_force_fx_cal, = self.ax_force_fx.plot([], [], 'g--', linewidth=1.5, alpha=0.8)
 
         self.ax_force_fy = plt.subplot(gs_force_components[0, 1])
         self.ax_force_fy.set_title("Force_Fy Magnitude", fontsize=10)
         self.ax_force_fy.grid(True, alpha=0.3)
         self.line_force_fy, = self.ax_force_fy.plot([], [], 'm-', linewidth=1.5)
+        self.line_force_fy_cal, = self.ax_force_fy.plot([], [], 'g--', linewidth=1.5, alpha=0.8)
 
         # Angle Error 保持不变，但更新标题
         self.ax4 = plt.subplot(gs_outer[3, 0])
@@ -134,12 +151,17 @@ class RealTimePlot:
         self.force_fy_history = deque(maxlen=MAG_PLOT_LEN)
 
         # 保留原有的总幅值历史，用于结束时的全程曲线绘制
-        self.adc_mag_history = deque(maxlen=MAG_PLOT_LEN) 
+        self.adc_mag_history = deque(maxlen=MAG_PLOT_LEN)
         self.raw_force_mag_history = deque(maxlen=MAG_PLOT_LEN)
+
+        # 标定力分量历史
+        self.force_fx_cal_history = deque(maxlen=MAG_PLOT_LEN)
+        self.force_fy_cal_history = deque(maxlen=MAG_PLOT_LEN)
 
 
     def set_data(self, adc_angle, adc_mag, force_angle, force_mag, diff_frame, total_pressure_sum, force_total_mag,
-                 cop_x, cop_y, base_cop_x, base_cop_y, delta_cop_x, delta_cop_y, raw_fx, raw_fy): #  raw_fx, raw_fy
+                 cop_x, cop_y, base_cop_x, base_cop_y, delta_cop_x, delta_cop_y, raw_fx, raw_fy,
+                 fx_cal=None, fy_cal=None, cal_angle=None, cal_mag=None):
         with self.lock:
             self.adc_angle = adc_angle
             self.adc_mag = adc_mag
@@ -152,8 +174,12 @@ class RealTimePlot:
             self.base_cop_y = base_cop_y
             self.delta_cop_x = delta_cop_x
             self.delta_cop_y = delta_cop_y
-            self.raw_fx = raw_fx # 存储 fx
-            self.raw_fy = raw_fy # 存储 fy
+            self.raw_fx = raw_fx
+            self.raw_fy = raw_fy
+            self.fx_cal = fx_cal
+            self.fy_cal = fy_cal
+            self.cal_angle = cal_angle
+            self.cal_mag = cal_mag
 
             diff = abs(adc_angle - force_angle)
             error = min(diff, 360 - diff)
@@ -171,8 +197,14 @@ class RealTimePlot:
             self.force_fx_history.append(raw_fx)
             self.force_fy_history.append(raw_fy)
 
+            # 追加标定力分量
+            if fx_cal is not None:
+                self.force_fx_cal_history.append(fx_cal)
+                self.force_fy_cal_history.append(fy_cal)
 
-    def append_full_data(self, current_ms, adc_mag, force_mag):
+
+    def append_full_data(self, current_ms, adc_mag, force_mag, cal_mag=None,
+                          fx=None, fy=None, fx_cal=None, fy_cal=None):
         """
         单独的函数：向全程列表追加数据
         """
@@ -180,6 +212,13 @@ class RealTimePlot:
             self.full_time_list.append(current_ms)
             self.full_adc_mag_list.append(adc_mag)
             self.full_force_mag_list.append(force_mag)
+            if cal_mag is not None:
+                self.full_cal_mag_list.append(cal_mag)
+            if fx is not None:
+                self.full_fx_list.append(fx)
+                self.full_fy_list.append(fy)
+                self.full_fx_cal_list.append(fx_cal if fx_cal is not None else float('nan'))
+                self.full_fy_cal_list.append(fy_cal if fy_cal is not None else float('nan'))
 
 
     def update_all(self, frame):
@@ -269,7 +308,30 @@ class RealTimePlot:
                           [0.5, 0.5 + l_force*np.sin(th_force)],
                           'r-', lw=3.5, alpha=1.0)
 
-        self.ax2.text(0.5, 0.9, f"Force: {fm:.1f}", ha='center', va='center', fontsize=8, color='red')
+        self.force_info_text.set_text(f"Force: (Fx={self.raw_fx:.2f}, Fy={self.raw_fy:.2f}) N")
+
+        # ========== 绿色箭头（标定力）==========
+        if self.cal_mag is not None and self.cal_angle is not None and self.cal_mag > self.epsilon:
+            th_cal = np.deg2rad(self.cal_angle)
+            max_cal_length = 0.4
+            l_cal = (self.cal_mag / 20.0) * max_cal_length
+            l_cal = min(l_cal, max_cal_length)
+
+            if l_cal > 0.02:
+                head_width = max(0.06, l_cal * 0.15)
+                head_length = max(0.04, l_cal * 0.1)
+                self.ax2.arrow(0.5, 0.5, l_cal*np.cos(th_cal), l_cal*np.sin(th_cal),
+                              head_width=head_width, head_length=head_length,
+                              fc='green', ec='darkgreen', lw=3.5, length_includes_head=True,
+                              alpha=0.8, joinstyle='round', capstyle='round')
+            else:
+                self.ax2.plot([0.5, 0.5 + l_cal*np.cos(th_cal)],
+                              [0.5, 0.5 + l_cal*np.sin(th_cal)],
+                              'g-', lw=3.5, alpha=0.8)
+
+            self.cal_info_text.set_text(f"Cal: (Fx={self.fx_cal:.2f}, Fy={self.fy_cal:.2f}) N")
+        else:
+            self.cal_info_text.set_text("")
 
 
     # ========== 更新绘图逻辑，读取adc_mag_history ==========
@@ -307,19 +369,31 @@ class RealTimePlot:
             ys = list(self.force_fx_history)
             self.line_force_fx.set_data(xs, ys)
             self.ax_force_fx.set_xlim(0, len(xs))
-            min_y_fx, max_y_fx = min(ys) * 0.95, max(ys) * 1.05
+            all_ys = list(ys)
+            if len(self.force_fx_cal_history) > 0:
+                cal_xs = list(range(len(self.force_fx_cal_history)))
+                cal_ys = list(self.force_fx_cal_history)
+                self.line_force_fx_cal.set_data(cal_xs, cal_ys)
+                all_ys.extend(cal_ys)
+            min_y_fx, max_y_fx = min(all_ys) * 0.95, max(all_ys) * 1.05
             if min_y_fx == max_y_fx:
                 self.ax_force_fx.set_ylim(min_y_fx - 1, max_y_fx + 1)
             else:
                 self.ax_force_fx.set_ylim(min_y_fx, max_y_fx)
-        
+
         # Force_Fy
         if len(self.force_fy_history) > 0:
             xs = list(range(len(self.force_fy_history)))
             ys = list(self.force_fy_history)
             self.line_force_fy.set_data(xs, ys)
             self.ax_force_fy.set_xlim(0, len(xs))
-            min_y_fy, max_y_fy = min(ys) * 0.95, max(ys) * 1.05
+            all_ys = list(ys)
+            if len(self.force_fy_cal_history) > 0:
+                cal_xs = list(range(len(self.force_fy_cal_history)))
+                cal_ys = list(self.force_fy_cal_history)
+                self.line_force_fy_cal.set_data(cal_xs, cal_ys)
+                all_ys.extend(cal_ys)
+            min_y_fy, max_y_fy = min(all_ys) * 0.95, max(all_ys) * 1.05
             if min_y_fy == max_y_fy:
                 self.ax_force_fy.set_ylim(min_y_fy - 1, max_y_fy + 1)
             else:
@@ -468,56 +542,90 @@ class RealTimePlot:
 
         self.ax6.legend(loc='upper left', fontsize=8)
 
-    # ==================== 程序结束绘制全程静态图 ====================
+    # ==================== 程序结束绘制全程综合图 ====================
     def plot_full_magnitude_curve(self, save_dir):
-        """
-        在程序结束后绘制全程的ADC(CoP偏移)和力传感器幅值曲线。
-        :param save_dir: 图片保存路径
-        """
+        """程序结束后绘制 6 面板综合图：CoP Offset, Force Mag, Fx, Fy, Error Fx, Error Fy"""
         import os
-        
-        # 如果没有数据，直接返回
+
         if len(self.full_time_list) == 0:
             print("⚠️ 没有采集到全程数据，跳过绘图。")
             return
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+        has_cal = len(self.full_fx_cal_list) == len(self.full_time_list)
+        has_fx = len(self.full_fx_list) == len(self.full_time_list)
 
-        # 绘制 CoP 偏移幅值
+        fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+        (ax1, ax2), (ax3, ax4), (ax5, ax6) = axes
+        t = self.full_time_list
+
+        # (1) CoP Offset Magnitude
         if len(self.full_adc_mag_list) > 0:
-            ax1.plot(self.full_time_list, self.full_adc_mag_list, 'b-', linewidth=1.5, label='CoP Offset Magnitude')
-            ax1.set_title("CoP Offset Magnitude Over Time", fontsize=14)
-            ax1.set_xlabel("Time (ms)", fontsize=12)
-            ax1.set_ylabel("CoP Offset Magnitude (Units)", fontsize=12)
+            ax1.plot(t, self.full_adc_mag_list, 'b-', linewidth=1.0)
+            ax1.set_title("CoP Offset Magnitude", fontsize=11)
+            ax1.set_ylabel("Magnitude", fontsize=9)
             ax1.grid(True, alpha=0.3)
-            ax1.legend(fontsize=12)
-            ax1_min_y, ax1_max_y = (min(self.full_adc_mag_list) * 0.9 if len(self.full_adc_mag_list) > 0 else 0), \
-                                  (max(self.full_adc_mag_list) * 1.1 if max(self.full_adc_mag_list) > 0 else 1)
-            ax1.set_ylim(ax1_min_y if ax1_min_y != ax1_max_y else ax1_min_y - 1,
-                         ax1_max_y if ax1_min_y != ax1_max_y else ax1_max_y + 1)
 
-
-        # 绘制力传感器幅值
+        # (2) Force Magnitude (实测 + 标定)
         if len(self.full_force_mag_list) > 0:
-            ax2.plot(self.full_time_list, self.full_force_mag_list, 'r-', linewidth=1.5, label='Force Magnitude')
-            ax2.set_title("Force Magnitude Over Time", fontsize=14)
-            ax2.set_xlabel("Time (ms)", fontsize=12)
-            ax2.set_ylabel("Force Magnitude (N)", fontsize=12)
+            ax2.plot(t, self.full_force_mag_list, 'r-', linewidth=1.0, label='Measured')
+            if has_cal and len(self.full_cal_mag_list) == len(t):
+                ax2.plot(t, self.full_cal_mag_list, 'g--', linewidth=1.0, label='Calibrated')
+            ax2.set_title("Force Magnitude", fontsize=11)
+            ax2.set_ylabel("Force (N)", fontsize=9)
             ax2.grid(True, alpha=0.3)
-            ax2.legend(fontsize=12)
-            ax2_min_y, ax2_max_y = (min(self.full_force_mag_list) * 0.9 if len(self.full_force_mag_list) > 0 else 0), \
-                                  (max(self.full_force_mag_list) * 1.1 if max(self.full_force_mag_list) > 0 else 1)
-            ax2.set_ylim(ax2_min_y if ax2_min_y != ax2_max_y else ax2_min_y - 1,
-                         ax2_max_y if ax2_min_y != ax2_max_y else ax2_max_y + 1)
+            ax2.legend(fontsize=8)
+
+        # (3) Fx (实测 + 标定)
+        if has_fx:
+            ax3.plot(t, self.full_fx_list, 'r-', linewidth=1.0, label='Fx measured')
+            if has_cal:
+                ax3.plot(t, self.full_fx_cal_list, 'g--', linewidth=1.0, label='Fx calibrated')
+            ax3.set_title("Fx: Measured vs Calibrated", fontsize=11)
+            ax3.set_ylabel("Force (N)", fontsize=9)
+            ax3.grid(True, alpha=0.3)
+            ax3.legend(fontsize=8)
+
+        # (4) Fy (实测 + 标定)
+        if has_fx:
+            ax4.plot(t, self.full_fy_list, 'm-', linewidth=1.0, label='Fy measured')
+            if has_cal:
+                ax4.plot(t, self.full_fy_cal_list, 'c--', linewidth=1.0, label='Fy calibrated')
+            ax4.set_title("Fy: Measured vs Calibrated", fontsize=11)
+            ax4.set_ylabel("Force (N)", fontsize=9)
+            ax4.grid(True, alpha=0.3)
+            ax4.legend(fontsize=8)
+
+        # (5) Error Fx
+        if has_fx and has_cal:
+            fx_err = [fx - fxc for fx, fxc in zip(self.full_fx_list, self.full_fx_cal_list)]
+            rms_fx = np.sqrt(np.mean(np.array(fx_err)**2))
+            ax5.plot(t, fx_err, 'r-', linewidth=1.0)
+            ax5.axhline(0, color='gray', linestyle=':', alpha=0.5)
+            ax5.set_title(f"Error Fx (RMS={rms_fx:.3f} N)", fontsize=11)
+            ax5.set_ylabel("Error (N)", fontsize=9)
+            ax5.grid(True, alpha=0.3)
+
+        # (6) Error Fy
+        if has_fx and has_cal:
+            fy_err = [fy - fyc for fy, fyc in zip(self.full_fy_list, self.full_fy_cal_list)]
+            rms_fy = np.sqrt(np.mean(np.array(fy_err)**2))
+            ax6.plot(t, fy_err, 'm-', linewidth=1.0)
+            ax6.axhline(0, color='gray', linestyle=':', alpha=0.5)
+            ax6.set_title(f"Error Fy (RMS={rms_fy:.3f} N)", fontsize=11)
+            ax6.set_ylabel("Error (N)", fontsize=9)
+            ax6.grid(True, alpha=0.3)
+
+        for ax in [ax1, ax2, ax3, ax4, ax5, ax6]:
+            ax.set_xlabel("Time (ms)", fontsize=9)
 
         plt.tight_layout()
         idx = 1
-        while os.path.exists(os.path.join(save_dir, f"full_magnitude_curve_cop_{idx}.png")):
+        while os.path.exists(os.path.join(save_dir, f"full_analysis_cop_{idx}.png")):
             idx += 1
-        save_path = os.path.join(save_dir, f"full_magnitude_curve_cop_{idx}.png")
+        save_path = os.path.join(save_dir, f"full_analysis_cop_{idx}.png")
         plt.savefig(save_path, dpi=300)
-        print(f"📊 全程幅值曲线已保存至：{save_path}")
-        plt.close(fig) # 关闭静态图，避免与实时图冲突
+        print(f"📊 全程综合分析图已保存至：{save_path}")
+        plt.close(fig)
 
 
     def show(self):
