@@ -8,6 +8,7 @@ setup.py
 ../../build/rm_75_calibration/rm_75_calibration.egg-info/requires.txt
 ../../build/rm_75_calibration/rm_75_calibration.egg-info/top_level.txt
 ../../build/rm_75_calibration/rm_75_calibration.egg-info/zip-safe
+config/force_control_params.yaml
 launch/calibration.launch.py
 resource/rm_75_calibration
 rm_75_calibration/__init__.py
@@ -17,6 +18,13 @@ rm_75_calibration/force_control_xz_node.py
 rm_75_calibration/force_control_z_node.py
 rm_75_calibration/force_sensor_node.py
 rm_75_calibration/rm_cali_v1.py
+rm_75_calibration.egg-info/PKG-INFO
+rm_75_calibration.egg-info/SOURCES.txt
+rm_75_calibration.egg-info/dependency_links.txt
+rm_75_calibration.egg-info/entry_points.txt
+rm_75_calibration.egg-info/requires.txt
+rm_75_calibration.egg-info/top_level.txt
+rm_75_calibration.egg-info/zip-safe
 rm_75_calibration_original/__init__.py
 rm_75_calibration_original/data.py
 rm_75_calibration_original/force_control_xz_node.py
@@ -24,6 +32,3 @@ rm_75_calibration_original/force_control_z_node.py
 rm_75_calibration_original/force_sensor_node.py
 rm_75_calibration_original/kunwei.py
 rm_75_calibration_original/rm_cali_v1.py
-test/test_copyright.py
-test/test_flake8.py
-test/test_pep257.py

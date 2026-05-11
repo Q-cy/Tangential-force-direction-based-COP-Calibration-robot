@@ -1,0 +1,26 @@
+[0.597s] Invoking command in '/home/qcy/ros2_project_ws/build/rm_75_calibration': CONDA_PROMPT_MODIFIER=(base) PYTHONPATH=/home/qcy/ros2_project_ws/build/rm_75_calibration/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/qcy/ros2_project_ws/install/rm_75_calibration/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/qcy/ros2_project_ws/build/rm_75_calibration/build --no-deps symlink_data --force
+[0.760s] running develop
+[0.846s] running egg_info
+[0.858s] writing rm_75_calibration.egg-info/PKG-INFO
+[0.858s] writing dependency_links to rm_75_calibration.egg-info/dependency_links.txt
+[0.858s] writing entry points to rm_75_calibration.egg-info/entry_points.txt
+[0.859s] writing requirements to rm_75_calibration.egg-info/requires.txt
+[0.859s] writing top-level names to rm_75_calibration.egg-info/top_level.txt
+[0.878s] reading manifest file 'rm_75_calibration.egg-info/SOURCES.txt'
+[0.878s] writing manifest file 'rm_75_calibration.egg-info/SOURCES.txt'
+[0.887s] running build_ext
+[0.888s] Creating /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/python3.12/site-packages/rm-75-calibration.egg-link (link to .)
+[0.888s] Installing force_control_node script to /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/rm_75_calibration
+[0.888s] Installing force_control_xz_node script to /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/rm_75_calibration
+[0.889s] Installing force_control_z_node script to /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/rm_75_calibration
+[0.889s] Installing force_sensor_node script to /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/rm_75_calibration
+[0.889s] Installing rm_cali_v1 script to /home/qcy/ros2_project_ws/install/rm_75_calibration/lib/rm_75_calibration
+[0.889s] 
+[0.889s] Installed /home/qcy/ros2_project_ws/build/rm_75_calibration
+[0.889s] running symlink_data
+[0.889s] symbolically linking /home/qcy/ros2_project_ws/build/rm_75_calibration/resource/rm_75_calibration -> /home/qcy/ros2_project_ws/install/rm_75_calibration/share/ament_index/resource_index/packages
+[0.890s] symbolically linking /home/qcy/ros2_project_ws/build/rm_75_calibration/package.xml -> /home/qcy/ros2_project_ws/install/rm_75_calibration/share/rm_75_calibration
+[0.890s] symbolically linking /home/qcy/ros2_project_ws/build/rm_75_calibration/launch/calibration.launch.py -> /home/qcy/ros2_project_ws/install/rm_75_calibration/share/rm_75_calibration/launch
+[0.890s] creating /home/qcy/ros2_project_ws/install/rm_75_calibration/share/rm_75_calibration/config
+[0.890s] error: [Errno 2] No such file or directory: '/home/qcy/ros2_project_ws/install/rm_75_calibration/share/rm_75_calibration/config/force_control_params.yaml'
+[0.911s] Invoked command in '/home/qcy/ros2_project_ws/build/rm_75_calibration' returned '1': CONDA_PROMPT_MODIFIER=(base) PYTHONPATH=/home/qcy/ros2_project_ws/build/rm_75_calibration/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/qcy/ros2_project_ws/install/rm_75_calibration/lib/python3.12/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/qcy/ros2_project_ws/build/rm_75_calibration/build --no-deps symlink_data --force
