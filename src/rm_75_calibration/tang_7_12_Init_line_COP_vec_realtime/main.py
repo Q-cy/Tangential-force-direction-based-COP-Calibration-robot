@@ -24,7 +24,7 @@ import table as table
 # ===================== 配置 =====================
 SAVE_DIR = "/home/qcy/Project/data/2.PZT_tangential/weight/test"
 TARGET_FPS = 100
-MAX_TIME_DIFF = 0.0151
+MAX_TIME_DIFF = 0.015
 stop_event = threading.Event()
 plot = None
 
