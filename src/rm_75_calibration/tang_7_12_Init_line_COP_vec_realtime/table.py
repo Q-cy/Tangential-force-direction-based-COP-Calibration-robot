@@ -31,7 +31,8 @@ CSV_HEADER = [
     # 角度和幅值
     "ADC_angle", "ADC_mag", "Force_angle", "Force_mag",
     # 标定后的切向力
-    "Fx_cal", "Fy_cal", "Force_cal_mag", "Force_cal_angle"
+    "Fx_cal", "Fy_cal", "Force_cal_mag", "Force_cal_angle",
+    "valid"
 ]
 
 def auto_get_csv_path(save_dir: str) -> str:
@@ -76,6 +77,7 @@ def build_csv_row(
     fy_cal: float = None,    # 标定后切向力 Y (N)
     force_cal_mag: float = None,   # 标定后幅值 (N)
     force_cal_angle: float = None, # 标定后角度 (deg)
+    valid: int = 0,                # 有效数据标识: 1=台阶静置/HOLD，0=中间过程
 ) -> list:
     """
     构造符合表头格式的CSV行数据
@@ -105,5 +107,6 @@ def build_csv_row(
         fy_cal if fy_cal is not None else float('nan'),
         force_cal_mag if force_cal_mag is not None else float('nan'),
         force_cal_angle if force_cal_angle is not None else float('nan'),
+        valid,
     ]
     return csv_row

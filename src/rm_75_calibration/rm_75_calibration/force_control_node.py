@@ -14,6 +14,7 @@ import yaml
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import WrenchStamped
+from std_msgs.msg import String
 from rm_ros_interfaces.msg import Movejp, Cartepos
 from ament_index_python.packages import get_package_share_directory
 import time
@@ -47,6 +48,7 @@ class ForceControlNode(Node):
         # ========== 发布 ==========
         self.movej_pub = self.create_publisher(Movejp, '/rm_driver/movej_p_cmd', 10)
         self.cartepos_pub = self.create_publisher(Cartepos, '/rm_driver/movep_canfd_cmd', 10)
+        self.state_pub = self.create_publisher(String, '/force_control_state', 10)
 
         # ========== 全局状态 ==========
         self.state = 'MOVE_TO_START'
@@ -67,6 +69,9 @@ class ForceControlNode(Node):
                 'hold_pos': start_pos[a],
                 'hold_time': 0.0,
                 'next_checkpoint': 0.0,
+                'backoff_attempts': 0,
+                'best_err': 1e9,
+                'best_pos': start_pos[a],
             }
 
         # ========== 100Hz 控制定时器 ==========
@@ -108,6 +113,7 @@ class ForceControlNode(Node):
                 'force_sign': self.get_parameter(f'{a}_force_sign').value,
                 'force_step': self.get_parameter(f'{a}_force_step').value,
                 'step_dwell': self.get_parameter(f'{a}_step_dwell').value,
+                'tolerance': self.get_parameter(f'{a}_force_tolerance').value,
             }
             self.cfg[a]['force_limit'] = (
                 self.cfg[a]['target'] * 3.0 if a in ('x', 'y')
@@ -158,6 +164,10 @@ class ForceControlNode(Node):
         if any_publish:
             self._publish_cartepos()
 
+        # 发布当前各轴 phase（供 realtime 进程判断有效数据）
+        phases = ','.join(f'{a}:{self.ax[a]["phase"]}' for a in activation_order)
+        self.state_pub.publish(String(data=phases))
+
         # ===== 检查全部轴 HOLD → 可选的持续保压时间 → DONE =====
         if self.hold_duration > 0:
             all_hold = all(self.ax[a]['phase'] == 'HOLD' for a in self.active_axes)
@@ -187,6 +197,8 @@ class ForceControlNode(Node):
 
         if st['phase'] == 'APPROACH':
             self._axis_evaluate_approach(axis)
+        elif st['phase'] == 'CHECKPOINT_BACKOFF':
+            self._axis_checkpoint_backoff(axis)
         elif st['phase'] == 'STEP_DWELL':
             self._axis_step_dwell(axis)
         elif st['phase'] == 'FINE_TUNE_WAIT':
@@ -229,20 +241,31 @@ class ForceControlNode(Node):
         st = self.ax[axis]
         f = self._get_force(axis)
         f_abs = abs(f)
+        tol = cfg.get('tolerance', 0.1)
 
-        # 力值阶梯模式：检测是否到达下一个台阶
+        # 力值阶梯模式：容差到达 + crossing 逻辑（与最终目标一致）
         force_step = cfg.get('force_step', 0)
-        if force_step > 0 and f_abs >= st['next_checkpoint']:
-            dwell = cfg.get('step_dwell', 50)
+        if force_step > 0 and abs(f_abs - st['next_checkpoint']) <= tol:
+            e_prev = abs(st['next_checkpoint'] - st['prev_force'])
+            e_curr = abs(st['next_checkpoint'] - f_abs)
             self.get_logger().info(
-                f'[{axis.upper()}] 阶梯 {st["next_checkpoint"]:.1f}N 到达 (实际={f_abs:.2f}N) → 静置 {dwell} 周期'
+                f'[{axis.upper()}] 阶梯 {st["next_checkpoint"]:.1f}N 到达 | '
+                f'prev={st["prev_force"]:.2f} err={e_prev:.2f} | curr={f_abs:.2f} err={e_curr:.2f}'
             )
+            if e_prev <= e_curr:
+                st['pos'] = st['prev_pos']
+                self.get_logger().info(f'[{axis.upper()}] >>> prev更接近 → 回退 + 静置')
+                self._publish_cartepos()
+            else:
+                self.get_logger().info(f'[{axis.upper()}] >>> curr更接近 → 静置')
+            dwell = cfg.get('step_dwell', 50)
             st['phase'] = 'STEP_DWELL'
             st['wait_ctr'] = dwell
             self._publish_cartepos()
             return
 
-        if f_abs >= cfg['target']:
+        # 最终目标检测（容差 + crossing 逻辑）
+        if abs(f_abs - cfg['target']) <= tol:
             e_prev = abs(cfg['target'] - st['prev_force'])
             e_curr = abs(cfg['target'] - f_abs)
             self.get_logger().info(
@@ -265,6 +288,19 @@ class ForceControlNode(Node):
                 st['phase'] = 'FINE_TUNE_WAIT'
             return
 
+        # 过冲检测：力值已远超下一个台阶 → 退回调优
+        if force_step > 0 and f_abs > st['next_checkpoint'] + tol:
+            st['backoff_attempts'] = 0
+            st['best_err'] = 1e9
+            st['best_pos'] = st['pos']
+            self.get_logger().info(
+                f'[{axis.upper()}] 过冲检测：force={f_abs:.2f} > '
+                f'checkpoint={st["next_checkpoint"]:.1f}+tol={tol:.1f} → 退回调优'
+            )
+            st['phase'] = 'CHECKPOINT_BACKOFF'
+            self._axis_checkpoint_backoff(axis)
+            return
+
         st['prev_force'] = f_abs
         st['prev_pos'] = st['pos']
         fine_th = cfg['target'] * cfg['fine_ratio']
@@ -272,6 +308,44 @@ class ForceControlNode(Node):
             self._axis_do_step(axis, cfg['approach'], cfg['coarse_wait'], tag='粗')
         else:
             self._axis_do_step(axis, cfg['step'], cfg['fine_wait'], tag='细')
+
+    # ---------- 过冲退回调优 ----------
+    def _axis_checkpoint_backoff(self, axis):
+        st = self.ax[axis]
+        cfg = self.cfg[axis]
+        f_abs = abs(self._get_force(axis))
+        tol = cfg.get('tolerance', 0.1)
+
+        err = abs(f_abs - st['next_checkpoint'])
+        if err < st['best_err']:
+            st['best_err'] = err
+            st['best_pos'] = st['pos']
+        st['backoff_attempts'] += 1
+
+        # 进入容差 → 成功
+        if err <= tol:
+            self.get_logger().info(
+                f'[{axis.upper()}] 回退成功：force={f_abs:.2f}N → 台阶 {st["next_checkpoint"]:.1f}N'
+            )
+            st['phase'] = 'STEP_DWELL'
+            st['wait_ctr'] = cfg.get('step_dwell', 50)
+            self._publish_cartepos()
+            return
+
+        # 超过最大尝试次数 → 取最接近位置
+        if st['backoff_attempts'] >= 10:
+            st['pos'] = st['best_pos']
+            self.get_logger().info(
+                f'[{axis.upper()}] 回退超限 → 取最佳位置 pos={st["pos"]:.6f} '
+                f'(best_err={st["best_err"]:.2f}N)'
+            )
+            st['phase'] = 'STEP_DWELL'
+            st['wait_ctr'] = cfg.get('step_dwell', 50)
+            self._publish_cartepos()
+            return
+
+        # 反向精细步进
+        self._axis_do_step(axis, cfg['step'], cfg['fine_wait'], direction='rev', tag='回退')
 
     # ---------- 台阶静置 ----------
     def _axis_step_dwell(self, axis):
@@ -281,15 +355,17 @@ class ForceControlNode(Node):
         st['next_checkpoint'] += force_step
         if st['next_checkpoint'] >= cfg['target']:
             self.get_logger().info(
-                f'[{axis.upper()}] 台阶静置完成 → 继续逼近最终目标 {cfg["target"]:.1f}N'
+                f'[{axis.upper()}] 台阶静置完成 → 最终目标 {cfg["target"]:.1f}N 已到达，进入 HOLD'
             )
-            st['next_checkpoint'] = cfg['target']
+            st['phase'] = 'HOLD'
+            st['hold_time'] = time.time()
+            self._publish_cartepos()
         else:
             self.get_logger().info(
                 f'[{axis.upper()}] 台阶静置完成 → 下一台阶 {st["next_checkpoint"]:.1f}N'
             )
-        st['phase'] = 'APPROACH'
-        st['wait_ctr'] = 0
+            st['phase'] = 'APPROACH'
+            st['wait_ctr'] = 0
 
     # ---------- 精调评估 ----------
     def _axis_evaluate_fine_tune(self, axis):

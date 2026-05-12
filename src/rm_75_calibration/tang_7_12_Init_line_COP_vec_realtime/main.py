@@ -13,6 +13,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 from geometry_msgs.msg import WrenchStamped
+from std_msgs.msg import String
 
 # 导入自定义模块
 import angle as angle
@@ -51,6 +52,26 @@ class ForceDataSubscriber(Node):
         ]
         self.buffer.append({"t": ts, "data": data})
 
+# ===================== 控制状态订阅节点 =====================
+class PhaseSubscriber(Node):
+    """从 /force_control_state 话题订阅当前力控 phase，用于判断有效数据"""
+    def __init__(self):
+        super().__init__('phase_subscriber')
+        self.latest_phase = ''
+        self.lock = threading.Lock()
+        self.sub = self.create_subscription(
+            String, '/force_control_state', self._callback, 10
+        )
+
+    def _callback(self, msg):
+        with self.lock:
+            self.latest_phase = msg.data
+
+    def is_valid(self):
+        with self.lock:
+            p = self.latest_phase
+        return 'HOLD' in p or 'STEP_DWELL' in p
+
 # ===================== 采集线程 =====================
 class PressureThread(threading.Thread):
     def __init__(self, sensor, buf):
@@ -75,7 +96,7 @@ def ros2_spin(executor):
         executor.spin_once(timeout_sec=0.01)
 
 # ===================== 数据循环 =====================
-def data_loop(force_node):
+def data_loop(force_node, phase_node=None):
     global plot
     # 自动获取CSV文件路径
     csv_path = table.auto_get_csv_path(SAVE_DIR)
@@ -166,7 +187,9 @@ def data_loop(force_node):
             cal_angle, cal_mag = angle.compute_vector_angle(fx_cal, fy_cal)
         else:
             fx_cal, fy_cal, cal_angle, cal_mag = None, None, None, None
-        
+
+        valid = 1 if (phase_node and phase_node.is_valid()) else 0
+
         # 构造CSV行数据（调用封装函数）
         csv_row = table.build_csv_row(
             press_timestamp=press_data_item["t"],
@@ -186,6 +209,7 @@ def data_loop(force_node):
             fy_cal=fy_cal,
             force_cal_mag=cal_mag,
             force_cal_angle=cal_angle,
+            valid=valid,
         )
         
         # 写入CSV行
@@ -223,8 +247,10 @@ def main():
     # 创建力数据订阅节点
     buf_force = data.TimestampedBuffer(500)
     force_node = ForceDataSubscriber(buf_force)
+    phase_node = PhaseSubscriber()
     executor = SingleThreadedExecutor()
     executor.add_node(force_node)
+    executor.add_node(phase_node)
 
     # 启动 ROS2 spin 线程
     spin_thread = threading.Thread(target=ros2_spin, args=(executor,), daemon=True)
@@ -232,7 +258,7 @@ def main():
 
     plot = realtime.RealTimePlot()
     # 启动数据采集线程
-    data_thread = threading.Thread(target=data_loop, args=(force_node,))
+    data_thread = threading.Thread(target=data_loop, args=(force_node, phase_node))
     data_thread.start()
     plt.show()  # 阻塞直到关闭绘图窗口
 
