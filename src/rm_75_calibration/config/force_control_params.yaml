@@ -32,7 +32,7 @@
     z_force_field: 'force.z'       # 对应的 Wrench 字段
     z_force_sign: -1               # 力值符号翻转: -1=取反（向下为正）
     z_force_tolerance: 0.2         # 力值容差 (N)，|f - target| ≤ 此值视为到达
-    z_cross_axis_drift_multiplier: 3.0  # 他轴运动时 HOLD drift 放大倍数
+    z_cross_axis_drift_multiplier: 2.0  # 他轴运动时 HOLD drift 放大倍数
 
     # ==================== X 轴参数（切向力） ====================
     x_target_force: 5.0            # 目标力值 (N)

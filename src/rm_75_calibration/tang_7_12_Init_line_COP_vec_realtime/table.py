@@ -31,8 +31,7 @@ CSV_HEADER = [
     # 角度和幅值
     "ADC_angle", "ADC_mag", "Force_angle", "Force_mag",
     # 标定后的切向力
-    "Fx_cal", "Fy_cal", "Force_cal_mag", "Force_cal_angle",
-    "valid"
+    "Fx_cal", "Fy_cal", "Force_cal_mag", "Force_cal_angle"
 ]
 
 def auto_get_csv_path(save_dir: str) -> str:
@@ -67,7 +66,7 @@ def build_csv_row(
     force_timestamp: float,  # 力传感器时间戳（秒）
     delta_cop_x: float,      # 新增 CoP 偏移X分量
     delta_cop_y: float,      # 新增 CoP 偏移Y分量
-    delta_force_x: float,    # <--- ADDED THIS PARAMETER
+    delta_force_x: float,
     delta_force_y: float,
     delta_force_z: float,
     adc_angle: float,        # ADC角度
@@ -78,7 +77,6 @@ def build_csv_row(
     fy_cal: float = None,    # 标定后切向力 Y (N)
     force_cal_mag: float = None,   # 标定后幅值 (N)
     force_cal_angle: float = None, # 标定后角度 (deg)
-    valid: int = 0,                # 有效数据标识: 1=台阶静置/HOLD，0=中间过程
 ) -> list:
     """
     构造符合表头格式的CSV行数据
@@ -86,7 +84,7 @@ def build_csv_row(
     """
     # 计算时间差
     dt = abs(press_timestamp - force_timestamp)
-    
+
     # 构造行数据
     csv_row = [
         press_timestamp * 1000,  # timestamp：转换为毫秒级
@@ -98,7 +96,7 @@ def build_csv_row(
         dt,                      # dt：时间戳差值（秒）
         delta_cop_x,             # delta_CoP_X
         delta_cop_y,             # delta_CoP_Y
-        delta_force_x,           # <--- ADDED THIS TO THE ROW
+        delta_force_x,
         delta_force_y,
         delta_force_z,
         adc_angle,               # ADC_angle：PZT计算的角度
@@ -109,6 +107,5 @@ def build_csv_row(
         fy_cal if fy_cal is not None else float('nan'),
         force_cal_mag if force_cal_mag is not None else float('nan'),
         force_cal_angle if force_cal_angle is not None else float('nan'),
-        valid,
     ]
     return csv_row

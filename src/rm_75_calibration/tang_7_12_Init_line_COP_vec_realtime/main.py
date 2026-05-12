@@ -13,7 +13,6 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 from geometry_msgs.msg import WrenchStamped
-from std_msgs.msg import String
 
 # 导入自定义模块
 import angle as angle
@@ -52,26 +51,6 @@ class ForceDataSubscriber(Node):
         ]
         self.buffer.append({"t": ts, "data": data})
 
-# ===================== 控制状态订阅节点 =====================
-class PhaseSubscriber(Node):
-    """从 /force_control_state 话题订阅当前力控 phase，用于判断有效数据"""
-    def __init__(self):
-        super().__init__('phase_subscriber')
-        self.latest_phase = ''
-        self.lock = threading.Lock()
-        self.sub = self.create_subscription(
-            String, '/force_control_state', self._callback, 10
-        )
-
-    def _callback(self, msg):
-        with self.lock:
-            self.latest_phase = msg.data
-
-    def is_valid(self):
-        with self.lock:
-            p = self.latest_phase
-        return 'HOLD' in p or 'STEP_DWELL' in p
-
 # ===================== 采集线程 =====================
 class PressureThread(threading.Thread):
     def __init__(self, sensor, buf):
@@ -96,7 +75,7 @@ def ros2_spin(executor):
         executor.spin_once(timeout_sec=0.01)
 
 # ===================== 数据循环 =====================
-def data_loop(force_node, phase_node=None):
+def data_loop(force_node):
     global plot
     # 自动获取CSV文件路径
     csv_path = table.auto_get_csv_path(SAVE_DIR)
@@ -145,13 +124,13 @@ def data_loop(force_node, phase_node=None):
     while not stop_event.is_set():
         now = time.perf_counter()
         rel_ms = int((now - t0) * 1000)  # 相对毫秒数
-        
+
         # 获取最新压力传感器数据
         press_data_item = buf_press.get_latest()
         if not press_data_item:
             time.sleep(0.001)
             continue
-        
+
         # 匹配最近的力传感器数据
         force_data_item = buf_force.find_closest(press_data_item["t"])
         if not force_data_item or abs(press_data_item["t"] - force_data_item["t"]) > MAX_TIME_DIFF:
@@ -179,7 +158,6 @@ def data_loop(force_node, phase_node=None):
         fx_f = np.median(buf_fx)
         fy_f = np.median(buf_fy)
         fz_f = np.median(buf_fz)
-
         total_pressure = np.sum(press_data_item["data"])
 
         # 计算角度和幅值（使用滤波后的值）
@@ -192,8 +170,6 @@ def data_loop(force_node, phase_node=None):
             cal_angle, cal_mag = angle.compute_vector_angle(fx_cal, fy_cal)
         else:
             fx_cal, fy_cal, cal_angle, cal_mag = None, None, None, None
-
-        valid = 1 if (phase_node and phase_node.is_valid()) else 0
 
         # 构造CSV行数据（调用封装函数）
         csv_row = table.build_csv_row(
@@ -215,13 +191,12 @@ def data_loop(force_node, phase_node=None):
             fy_cal=fy_cal,
             force_cal_mag=cal_mag,
             force_cal_angle=cal_angle,
-            valid=valid,
         )
-        
+
         # 写入CSV行
         csv_writer.writerow(csv_row)
         csv_file_obj.flush()  # 立即刷新到文件
-        
+
         # 更新绘图数据
         plot.set_data(
             adc_angle, adc_mag, force_angle, force_mag,
@@ -234,7 +209,7 @@ def data_loop(force_node, phase_node=None):
         if COP.contact_initialized:
                     plot.append_full_data(rel_ms, adc_mag, force_mag, cal_mag,
                                           fx_f, fy_f, fx_cal, fy_cal)
-        
+
         # 控制采集频率
         elapsed = time.perf_counter() - now
         time.sleep(max(0, 1/TARGET_FPS - elapsed))
@@ -253,10 +228,8 @@ def main():
     # 创建力数据订阅节点
     buf_force = data.TimestampedBuffer(500)
     force_node = ForceDataSubscriber(buf_force)
-    phase_node = PhaseSubscriber()
     executor = SingleThreadedExecutor()
     executor.add_node(force_node)
-    executor.add_node(phase_node)
 
     # 启动 ROS2 spin 线程
     spin_thread = threading.Thread(target=ros2_spin, args=(executor,), daemon=True)
@@ -264,7 +237,7 @@ def main():
 
     plot = realtime.RealTimePlot()
     # 启动数据采集线程
-    data_thread = threading.Thread(target=data_loop, args=(force_node, phase_node))
+    data_thread = threading.Thread(target=data_loop, args=(force_node,))
     data_thread.start()
     plt.show()  # 阻塞直到关闭绘图窗口
 
