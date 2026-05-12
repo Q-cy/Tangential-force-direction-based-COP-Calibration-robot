@@ -65,6 +65,8 @@ class RealTimePlot:
         self.delta_cop_y = 0.0
         self.raw_fx = 0.0
         self.raw_fy = 0.0
+        self.raw_fz = 0.0
+        self.total_pressure = 0.0
         self.fx_cal = None      # 标定力 X
         self.fy_cal = None      # 标定力 Y
         self.cal_angle = None
@@ -124,7 +126,13 @@ class RealTimePlot:
         self.line_force_fy, = self.ax_force_fy.plot([], [], 'm-', linewidth=1.5)
         self.line_force_fy_cal, = self.ax_force_fy.plot([], [], 'g--', linewidth=1.5, alpha=0.8)
 
-        # Angle Error 保持不变，但更新标题
+        # 实时数值标注
+        self.txt_adc_dx = self.ax_adc_dx.text(0.98, 0.95, '', transform=self.ax_adc_dx.transAxes, ha='right', va='top', fontsize=7, color='blue')
+        self.txt_adc_dy = self.ax_adc_dy.text(0.98, 0.95, '', transform=self.ax_adc_dy.transAxes, ha='right', va='top', fontsize=7, color='cyan')
+        self.txt_force_fx = self.ax_force_fx.text(0.98, 0.95, '', transform=self.ax_force_fx.transAxes, ha='right', va='top', fontsize=7, color='red')
+        self.txt_force_fy = self.ax_force_fy.text(0.98, 0.95, '', transform=self.ax_force_fy.transAxes, ha='right', va='top', fontsize=7, color='magenta')
+
+        # Angle Error
         self.ax4 = plt.subplot(gs_outer[3, 0])
         self.ax4.set_title("Angle Error between CoP Offset and Force", fontsize=10)
         self.ax4.set_ylim(0, 180)
@@ -154,13 +162,17 @@ class RealTimePlot:
         self.adc_mag_history = deque(maxlen=MAG_PLOT_LEN)
         self.raw_force_mag_history = deque(maxlen=MAG_PLOT_LEN)
 
+        # Fz + 总压力历史
+        self.force_fz_history = deque(maxlen=MAG_PLOT_LEN)
+        self.pzt_fz_history = deque(maxlen=MAG_PLOT_LEN)
+
         # 标定力分量历史
         self.force_fx_cal_history = deque(maxlen=MAG_PLOT_LEN)
         self.force_fy_cal_history = deque(maxlen=MAG_PLOT_LEN)
 
 
     def set_data(self, adc_angle, adc_mag, force_angle, force_mag, diff_frame, total_pressure_sum, force_total_mag,
-                 cop_x, cop_y, base_cop_x, base_cop_y, delta_cop_x, delta_cop_y, raw_fx, raw_fy,
+                 cop_x, cop_y, base_cop_x, base_cop_y, delta_cop_x, delta_cop_y, raw_fx, raw_fy, raw_fz=0.0,
                  fx_cal=None, fy_cal=None, cal_angle=None, cal_mag=None):
         with self.lock:
             self.adc_angle = adc_angle
@@ -176,6 +188,7 @@ class RealTimePlot:
             self.delta_cop_y = delta_cop_y
             self.raw_fx = raw_fx
             self.raw_fy = raw_fy
+            self.raw_fz = raw_fz
             self.fx_cal = fx_cal
             self.fy_cal = fy_cal
             self.cal_angle = cal_angle
@@ -193,9 +206,11 @@ class RealTimePlot:
             self.adc_dx_history.append(delta_cop_x)
             self.adc_dy_history.append(delta_cop_y)
 
-            # 追加力传感器分量 (Force Fx/Fy)
+            # 追加力传感器分量
             self.force_fx_history.append(raw_fx)
             self.force_fy_history.append(raw_fy)
+            self.force_fz_history.append(raw_fz)
+            self.pzt_fz_history.append(total_pressure_sum)
 
             # 追加标定力分量
             if fx_cal is not None:
@@ -334,70 +349,44 @@ class RealTimePlot:
             self.cal_info_text.set_text("")
 
 
+    def _update_line_plot(self, ax, line, history, txt):
+        """辅助方法：更新一条线图的数据、范围及数值标注"""
+        if len(history) > 0:
+            xs = list(range(len(history)))
+            ys = list(history)
+            line.set_data(xs, ys)
+            ax.set_xlim(0, len(xs))
+            min_y, max_y = min(ys) * 0.95, max(ys) * 1.05
+            if min_y == max_y:
+                ax.set_ylim(min_y - 1, max_y + 1)
+            else:
+                ax.set_ylim(min_y, max_y)
+            if txt and len(ys) > 0:
+                txt.set_text(f"{ys[-1]:.2f}")
+
     # ========== 更新绘图逻辑，读取adc_mag_history ==========
     def update_adc_components(self):
-        # PZT_Fx (delta_cop_x)
-        if len(self.adc_dx_history) > 0:
-            xs = list(range(len(self.adc_dx_history)))
-            ys = list(self.adc_dx_history)
-            self.line_adc_dx.set_data(xs, ys)
-            self.ax_adc_dx.set_xlim(0, len(xs))
-            # 动态调整Y轴范围，避免数据被截断，且考虑零值情况
-            min_y_dx, max_y_dx = min(ys) * 0.95, max(ys) * 1.05
-            if min_y_dx == max_y_dx: # 如果所有值都相同
-                self.ax_adc_dx.set_ylim(min_y_dx - 1, max_y_dx + 1)
-            else:
-                self.ax_adc_dx.set_ylim(min_y_dx, max_y_dx)
-        
-        # PZT_Fy (delta_cop_y)
-        if len(self.adc_dy_history) > 0:
-            xs = list(range(len(self.adc_dy_history)))
-            ys = list(self.adc_dy_history)
-            self.line_adc_dy.set_data(xs, ys)
-            self.ax_adc_dy.set_xlim(0, len(xs))
-            min_y_dy, max_y_dy = min(ys) * 0.95, max(ys) * 1.05
-            if min_y_dy == max_y_dy:
-                self.ax_adc_dy.set_ylim(min_y_dy - 1, max_y_dy + 1)
-            else:
-                self.ax_adc_dy.set_ylim(min_y_dy, max_y_dy)
-
+        self._update_line_plot(self.ax_adc_dx, self.line_adc_dx, self.adc_dx_history, self.txt_adc_dx)
+        self._update_line_plot(self.ax_adc_dy, self.line_adc_dy, self.adc_dy_history, self.txt_adc_dy)
 
     def update_force_components(self):
-        # Force_Fx
         if len(self.force_fx_history) > 0:
-            xs = list(range(len(self.force_fx_history)))
-            ys = list(self.force_fx_history)
-            self.line_force_fx.set_data(xs, ys)
-            self.ax_force_fx.set_xlim(0, len(xs))
-            all_ys = list(ys)
+            self._update_line_plot(self.ax_force_fx, self.line_force_fx, self.force_fx_history, self.txt_force_fx)
             if len(self.force_fx_cal_history) > 0:
                 cal_xs = list(range(len(self.force_fx_cal_history)))
-                cal_ys = list(self.force_fx_cal_history)
-                self.line_force_fx_cal.set_data(cal_xs, cal_ys)
-                all_ys.extend(cal_ys)
-            min_y_fx, max_y_fx = min(all_ys) * 0.95, max(all_ys) * 1.05
-            if min_y_fx == max_y_fx:
-                self.ax_force_fx.set_ylim(min_y_fx - 1, max_y_fx + 1)
-            else:
-                self.ax_force_fx.set_ylim(min_y_fx, max_y_fx)
+                self.line_force_fx_cal.set_data(cal_xs, list(self.force_fx_cal_history))
+                all_ys = list(self.force_fx_history) + list(self.force_fx_cal_history)
+                y_min, y_max = min(all_ys) * 0.95, max(all_ys) * 1.05
+                self.ax_force_fx.set_ylim(y_min if y_min != y_max else y_min - 1, y_max if y_min != y_max else y_max + 1)
 
-        # Force_Fy
         if len(self.force_fy_history) > 0:
-            xs = list(range(len(self.force_fy_history)))
-            ys = list(self.force_fy_history)
-            self.line_force_fy.set_data(xs, ys)
-            self.ax_force_fy.set_xlim(0, len(xs))
-            all_ys = list(ys)
+            self._update_line_plot(self.ax_force_fy, self.line_force_fy, self.force_fy_history, self.txt_force_fy)
             if len(self.force_fy_cal_history) > 0:
                 cal_xs = list(range(len(self.force_fy_cal_history)))
-                cal_ys = list(self.force_fy_cal_history)
-                self.line_force_fy_cal.set_data(cal_xs, cal_ys)
-                all_ys.extend(cal_ys)
-            min_y_fy, max_y_fy = min(all_ys) * 0.95, max(all_ys) * 1.05
-            if min_y_fy == max_y_fy:
-                self.ax_force_fy.set_ylim(min_y_fy - 1, max_y_fy + 1)
-            else:
-                self.ax_force_fy.set_ylim(min_y_fy, max_y_fy)
+                self.line_force_fy_cal.set_data(cal_xs, list(self.force_fy_cal_history))
+                all_ys = list(self.force_fy_history) + list(self.force_fy_cal_history)
+                y_min, y_max = min(all_ys) * 0.95, max(all_ys) * 1.05
+                self.ax_force_fy.set_ylim(y_min if y_min != y_max else y_min - 1, y_max if y_min != y_max else y_max + 1)
 
 
     def update_error(self):
@@ -604,6 +593,7 @@ class RealTimePlot:
             ax5.set_title(f"Error Fx (RMS={rms_fx:.3f} N)", fontsize=11)
             ax5.set_ylabel("Error (N)", fontsize=9)
             ax5.grid(True, alpha=0.3)
+            ax5.text(0.02, 0.95, f"RMS={rms_fx:.3f} N", transform=ax5.transAxes, fontsize=10, va='top', color='red')
 
         # (6) Error Fy
         if has_fx and has_cal:
@@ -614,6 +604,7 @@ class RealTimePlot:
             ax6.set_title(f"Error Fy (RMS={rms_fy:.3f} N)", fontsize=11)
             ax6.set_ylabel("Error (N)", fontsize=9)
             ax6.grid(True, alpha=0.3)
+            ax6.text(0.02, 0.95, f"RMS={rms_fy:.3f} N", transform=ax6.transAxes, fontsize=10, va='top', color='red')
 
         for ax in [ax1, ax2, ax3, ax4, ax5, ax6]:
             ax.set_xlabel("Time (ms)", fontsize=9)

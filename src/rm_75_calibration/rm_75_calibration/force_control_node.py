@@ -69,6 +69,7 @@ class ForceControlNode(Node):
                 'hold_pos': start_pos[a],
                 'hold_time': 0.0,
                 'next_checkpoint': 0.0,
+                'drift_boosted': False,
                 'backoff_attempts': 0,
                 'best_err': 1e9,
                 'best_pos': start_pos[a],
@@ -114,6 +115,7 @@ class ForceControlNode(Node):
                 'force_step': self.get_parameter(f'{a}_force_step').value,
                 'step_dwell': self.get_parameter(f'{a}_step_dwell').value,
                 'tolerance': self.get_parameter(f'{a}_force_tolerance').value,
+                'cross_drift_mul': self.get_parameter(f'{a}_cross_axis_drift_multiplier').value,
             }
             self.cfg[a]['force_limit'] = (
                 self.cfg[a]['target'] * 3.0 if a in ('x', 'y')
@@ -158,8 +160,14 @@ class ForceControlNode(Node):
         activation_order = sorted(self.active_axes, key=lambda a: {'z': 0, 'x': 1, 'y': 2}[a])
         any_publish = False
         for a in activation_order:
+            prev_phase = self.ax[a]['phase']
             if self._run_axis_machine(a):
                 any_publish = True
+            # 本轴刚进入 HOLD → 清除其他轴的 drift_boosted
+            if prev_phase != 'HOLD' and self.ax[a]['phase'] == 'HOLD':
+                for other in activation_order:
+                    if other != a:
+                        self.ax[other]['drift_boosted'] = False
 
         if any_publish:
             self._publish_cartepos()
@@ -227,6 +235,10 @@ class ForceControlNode(Node):
             f'[{axis.upper()}] 启动 | 目标={cfg["target"]:.1f}N '
             f'步长={cfg["step"]*1e3:.2f}mm sign={cfg["step_sign"]}'
         )
+        # 放大其他 HOLD 轴的漂移阈值，避免交叉耦合导致误纠偏
+        for a in self.active_axes:
+            if a != axis and self.ax[a]['phase'] == 'HOLD':
+                self.ax[a]['drift_boosted'] = True
         st = self.ax[axis]
         st['phase'] = 'APPROACH'
         st['wait_ctr'] = 0
@@ -406,15 +418,16 @@ class ForceControlNode(Node):
         st = self.ax[axis]
         f_abs = abs(self._get_force(axis))
         error = abs(cfg['target'] - f_abs)
+        effective_drift = cfg['drift'] * (cfg.get('cross_drift_mul', 3.0) if st.get('drift_boosted') else 1.0)
 
-        if error > cfg['drift']:
+        if error > effective_drift:
             st['prev_force'] = f_abs
             st['prev_pos'] = st['pos']
             st['error_before'] = error
             direction = 'fwd' if f_abs < cfg['target'] else 'rev'
             self.get_logger().info(
                 f'[{axis.upper()}-HOLD] 漂移 force={f_abs:.2f}N '
-                f'err={error:.2f}>{cfg["drift"]}N → {direction}步进'
+                f'err={error:.2f}>{effective_drift:.2f}N → {direction}步进'
             )
             self._axis_do_step(axis, cfg['step'], cfg['fine_wait'], direction=direction)
             st['phase'] = 'RECOVER_WAIT'

@@ -27,7 +27,7 @@ CSV_HEADER = [
     # 新增 CoP 偏移分量
     "delta_CoP_X", "delta_CoP_Y",
     # 新增 Force 分量
-    "delta_Force_X", "delta_Force_Y", # <--- ADDED THESE TWO LINES
+    "delta_Force_X", "delta_Force_Y", "delta_Force_Z",
     # 角度和幅值
     "ADC_angle", "ADC_mag", "Force_angle", "Force_mag",
     # 标定后的切向力
@@ -68,7 +68,8 @@ def build_csv_row(
     delta_cop_x: float,      # 新增 CoP 偏移X分量
     delta_cop_y: float,      # 新增 CoP 偏移Y分量
     delta_force_x: float,    # <--- ADDED THIS PARAMETER
-    delta_force_y: float,    # <--- ADDED THIS PARAMETER
+    delta_force_y: float,
+    delta_force_z: float,
     adc_angle: float,        # ADC角度
     adc_mag: float,          # ADC幅值
     force_angle: float,      # 力传感器角度
@@ -98,7 +99,8 @@ def build_csv_row(
         delta_cop_x,             # delta_CoP_X
         delta_cop_y,             # delta_CoP_Y
         delta_force_x,           # <--- ADDED THIS TO THE ROW
-        delta_force_y,           # <--- ADDED THIS TO THE ROW
+        delta_force_y,
+        delta_force_z,
         adc_angle,               # ADC_angle：PZT计算的角度
         adc_mag,                 # ADC_mag：CoP偏移幅值
         force_angle,             # Force_angle：力传感器计算的角度
