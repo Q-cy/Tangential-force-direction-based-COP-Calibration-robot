@@ -24,9 +24,9 @@
     z_fine_threshold_ratio: 0.8    # 粗→细切换比例（达到目标力×此值后切换）
     z_coarse_stabilize_cycles: 10  # 粗调步间等待周期（100Hz 下 10=0.1s）
     z_fine_stabilize_cycles: 50    # 精细步间等待周期（100Hz 下 50=0.5s）
-    z_drift_threshold: 0.2         # HOLD 漂移阈值 (N)
-    z_step_dwell: 100              # 每步后静置循环数（100Hz，50=0.5s），0=不启用
-    z_force_step: 1.0              # 力值台阶 (N)，>0 时启用力值阶梯模式，0=不启用
+    z_drift_threshold: 0.1         # HOLD 漂移阈值 (N)
+    z_step_dwell: 500              # 每步后静置循环数（100Hz，50=0.5s），0=不启用
+    z_force_step: 0.0              # 力值台阶 (N)，>0 时启用力值阶梯模式，0=不启用
     z_step_sign: -1                # 运动方向符号: -1=向下（逼近传感器），1=向上
     z_start_delay: 0.0             # 启动延迟 (s)
     z_force_field: 'force.z'       # 对应的 Wrench 字段
@@ -41,7 +41,7 @@
     x_fine_threshold_ratio: 0.8    # 粗→细切换比例
     x_coarse_stabilize_cycles: 10  # 粗调步间等待周期
     x_fine_stabilize_cycles: 50    # 精细步间等待周期
-    x_drift_threshold: 0.2         # HOLD 漂移阈值 (N)
+    x_drift_threshold: 0.1         # HOLD 漂移阈值 (N)
     x_step_dwell: 10               # 每步后静置循环数（100Hz，10=0.1s），0=不启用
     x_force_step: 0.0              # 力值台阶 (N)，>0 时启用力值阶梯模式，0=不启用
     x_step_sign: 1                 # 运动方向符号
@@ -58,7 +58,7 @@
     y_fine_threshold_ratio: 0.8    # 粗→细切换比例
     y_coarse_stabilize_cycles: 10  # 粗调步间等待周期
     y_fine_stabilize_cycles: 50    # 精细步间等待周期
-    y_drift_threshold: 0.2         # HOLD 漂移阈值 (N)
+    y_drift_threshold: 0.1         # HOLD 漂移阈值 (N)
     y_step_dwell: 1000             # 每步后静置循环数（100Hz，10=0.1s），0=不启用
     y_force_step: 1.0              # 力值台阶 (N)，>0 时启用力值阶梯模式，0=不启用
     y_step_sign: 1                 # 运动方向符号
