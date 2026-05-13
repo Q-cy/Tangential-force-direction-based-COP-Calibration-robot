@@ -20,8 +20,8 @@ LINE_DIST_THRESHOLD = 0.1               # 点到直线最大允许距离 (CoP单
 DIR_DOT_THRESHOLD = 0.7                 # 方向一致性最小点积 cos(夹角)
 
 # ===================== 二次静置精修参数 =====================
-POST_INIT_WINDOW = 5000                 # 初始 CoP 确定后监测帧数
-POST_INIT_STABLE_COUNT = 300            # 需要连续保持不变的帧数
+POST_INIT_WINDOW = 100000               # 初始 CoP 确定后监测帧数
+POST_INIT_STABLE_COUNT = 400            # 需要连续保持不变的帧数
 POST_INIT_STABLE_THRESHOLD = 0.1        # "几乎不变"判据：CoP 偏移距离阈值
 
 
