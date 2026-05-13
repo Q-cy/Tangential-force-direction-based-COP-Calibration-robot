@@ -3,6 +3,7 @@
 import os
 import csv
 import numpy as np
+from datetime import datetime
 
 # 定义CSV表头
 CSV_HEADER = [
@@ -35,12 +36,14 @@ CSV_HEADER = [
     "valid"
 ]
 
+LAST_BASE = None  # 最近一次 CSV 的文件名基础，供 realtime.py 生成对应 PNG 名
+
 def auto_get_csv_path(save_dir: str) -> str:
+    global LAST_BASE
     os.makedirs(save_dir, exist_ok=True)
-    idx = 1
-    while os.path.exists(f"{save_dir}/data_{idx}.csv"):
-        idx += 1
-    return f"{save_dir}/data_{idx}.csv"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    LAST_BASE = ts
+    return f"{save_dir}/data_{ts}.csv"
 
 def init_csv_file(file_path: str) -> tuple:
     csv_file_obj = open(file_path, "w", encoding="utf-8", newline="")

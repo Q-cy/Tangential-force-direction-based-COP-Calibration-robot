@@ -629,10 +629,9 @@ class RealTimePlot:
                 ax.set_xlabel("Time (ms)", fontsize=9)
 
         plt.tight_layout()
-        idx = 1
-        while os.path.exists(os.path.join(save_dir, f"full_analysis_cop_{idx}.png")):
-            idx += 1
-        save_path = os.path.join(save_dir, f"full_analysis_cop_{idx}.png")
+        import table
+        base = table.LAST_BASE if table.LAST_BASE else datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_path = os.path.join(save_dir, f"full_analysis_{base}.png")
         plt.savefig(save_path, dpi=300)
         print(f"📊 全程综合分析图已保存至：{save_path}")
         plt.close(fig)

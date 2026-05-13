@@ -14,3 +14,8 @@ ros2 launch rm_75_calibration calibration.launch.py \
 # 终端 3：WSL 数据处理 + 实时显示（接收 ROS2 六维力数据）
 python tang_7_12_Init_line_stable_COP_vec_cal_inter_realtime/main.py
 
+# 标定： 
+cd /home/qcy/Project/code/Tangential/finger_tang_7_12/Cop/project/tang_7_12_Init_line_COP_vec_cal/tang_7_12_Init_line_stable_COP_vec_cal_inter_realtime
+
+python calibrate.py data_1.csv
+
