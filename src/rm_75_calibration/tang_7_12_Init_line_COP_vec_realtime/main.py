@@ -118,7 +118,24 @@ def data_loop(force_node, phase_node=None):
     print("🎨 绘图已打开")
     t0 = time.perf_counter()
 
-    # 尝试加载标定插值器
+    # ===== 六维力传感器初始去皮 =====
+    print("⚖️  六维力传感器初始去皮中...")
+    force_bias = [0.0] * 6  # [Fx, Fy, Fz, Mx, My, Mz]
+    bias_samples = []
+    while len(bias_samples) < 50:
+        item = buf_force.get_latest()
+        if item:
+            bias_samples.append(item["data"])
+        time.sleep(0.01)
+    force_bias = np.median(np.array(bias_samples), axis=0).tolist()
+    print(f"   零点: Fx={force_bias[0]:.3f} Fy={force_bias[1]:.3f} Fz={force_bias[2]:.3f}")
+
+    # COP 二次静置精修后的 Fx/Fy 再去皮标志
+    cop_was_refined = False
+    cop_refine_fx_bias = 0.0
+    cop_refine_fy_bias = 0.0
+
+    # 尝试加载标定查找表
     cal_path = os.path.join(SAVE_DIR, "cal_lookup.npz")
     cal_ready = False
     points, fx_vals, fy_vals = None, None, None
@@ -164,8 +181,11 @@ def data_loop(force_node, phase_node=None):
         dx, dy = cop_res[6], cop_res[7] # delta_cop_x, delta_cop_y
         bx, by = cop_res[8], cop_res[9]
 
-        # 解析力传感器数据
-        fx, fy, fz, mx, my, mz = force_data_item["data"]
+        # 解析力传感器数据（减去初始零点 + COP精修后再去皮）
+        fx_raw, fy_raw, fz_raw, mx, my, mz = force_data_item["data"]
+        fx = fx_raw - force_bias[0] - cop_refine_fx_bias
+        fy = fy_raw - force_bias[1] - cop_refine_fy_bias
+        fz = fz_raw - force_bias[2]
 
         # 中值滤波：消除偶发尖峰
         buf_dx.append(dx)
@@ -185,6 +205,13 @@ def data_loop(force_node, phase_node=None):
         force_angle, force_mag = angle.compute_6Dforce_angle(fx_f, fy_f)
 
         # 标定：CoP位移 → 切向力（插值）
+        # COP 二次静置精修后对 Fx/Fy 再去皮
+        if COP.post_init_refined and not cop_was_refined:
+            cop_refine_fx_bias = fx_f
+            cop_refine_fy_bias = fy_f
+            cop_was_refined = True
+            print(f"🔧 COP精修完成，Fx/Fy再去皮: Fx_bias={cop_refine_fx_bias:.3f}, Fy_bias={cop_refine_fy_bias:.3f}")
+
         if cal_ready:
             fx_cal, fy_cal = calibrate.apply(dx_f, dy_f, points, fx_vals, fy_vals)
             cal_angle, cal_mag = angle.compute_vector_angle(fx_cal, fy_cal)
