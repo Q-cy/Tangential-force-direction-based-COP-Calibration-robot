@@ -52,7 +52,7 @@ class ForceDataSubscriber(Node):
         ]
         self.buffer.append({"t": ts, "data": data})
 
-# ===================== 控制状态订阅节点 =====================
+# ===================== ROS2控制状态订阅节点 =====================
 class PhaseSubscriber(Node):
     def __init__(self):
         super().__init__('phase_subscriber')
