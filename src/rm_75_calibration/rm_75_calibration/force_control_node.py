@@ -116,6 +116,8 @@ class ForceControlNode(Node):
                 'step_dwell': self.get_parameter(f'{a}_step_dwell').value,
                 'tolerance': self.get_parameter(f'{a}_force_tolerance').value,
                 'cross_drift_mul': self.get_parameter(f'{a}_cross_axis_drift_multiplier').value,
+                'control_mode': str(self.get_parameter(f'{a}_control_mode').value),
+                'unload_dwell': self.get_parameter(f'{a}_unload_dwell').value,
             }
             self.cfg[a]['force_limit'] = (
                 self.cfg[a]['target'] * 3.0 if a in ('x', 'y')
@@ -209,6 +211,12 @@ class ForceControlNode(Node):
             self._axis_checkpoint_backoff(axis)
         elif st['phase'] == 'STEP_DWELL':
             self._axis_step_dwell(axis)
+        elif st['phase'] == 'LOAD_HOLD':
+            self._axis_load_hold(axis)
+        elif st['phase'] == 'UNLOAD':
+            self._axis_do_unload(axis)
+        elif st['phase'] == 'UNLOAD_DWELL':
+            self._axis_unload_dwell(axis)
         elif st['phase'] == 'FINE_TUNE_WAIT':
             self._axis_evaluate_fine_tune(axis)
         elif st['phase'] == 'RECOVER_WAIT':
@@ -271,7 +279,10 @@ class ForceControlNode(Node):
             else:
                 self.get_logger().info(f'[{axis.upper()}] >>> curr更接近 → 静置')
             dwell = cfg.get('step_dwell', 50)
-            st['phase'] = 'STEP_DWELL'
+            if cfg.get('control_mode', 'staircase') == 'load_unload':
+                st['phase'] = 'LOAD_HOLD'
+            else:
+                st['phase'] = 'STEP_DWELL'
             st['wait_ctr'] = dwell
             self._publish_cartepos()
             return
@@ -375,6 +386,49 @@ class ForceControlNode(Node):
         else:
             self.get_logger().info(
                 f'[{axis.upper()}] 台阶静置完成 → 下一台阶 {st["next_checkpoint"]:.1f}N'
+            )
+            st['phase'] = 'APPROACH'
+            st['wait_ctr'] = 0
+
+    # ---------- 加载-卸载模式：保压 ----------
+    def _axis_load_hold(self, axis):
+        st = self.ax[axis]
+        st['phase'] = 'UNLOAD'
+        st['wait_ctr'] = 0
+        st['unload_start_pos'] = st['pos']
+        self.get_logger().info(f'[{axis.upper()}] 保压完成 → 开始卸载')
+
+    # ---------- 加载-卸载模式：抬起卸载 ----------
+    def _axis_do_unload(self, axis):
+        cfg = self.cfg[axis]
+        st = self.ax[axis]
+        f_abs = abs(self._get_force(axis))
+
+        if f_abs <= cfg.get('tolerance', 0.1):
+            dwell = cfg.get('unload_dwell', 500)
+            self.get_logger().info(
+                f'[{axis.upper()}] 卸载完成 force={f_abs:.2f}N → 静置 {dwell} 周期'
+            )
+            st['phase'] = 'UNLOAD_DWELL'
+            st['wait_ctr'] = dwell
+            return
+
+        self._axis_do_step(axis, cfg['approach'], cfg['coarse_wait'], direction='rev', tag='卸载')
+
+    # ---------- 加载-卸载模式：卸载后静置 ----------
+    def _axis_unload_dwell(self, axis):
+        st = self.ax[axis]
+        st['next_checkpoint'] += self.cfg[axis].get('force_step', 0)
+        if st['next_checkpoint'] >= self.cfg[axis]['target']:
+            self.get_logger().info(
+                f'[{axis.upper()}] 全部台阶完成 → 最终目标 {self.cfg[axis]["target"]:.1f}N'
+            )
+            st['phase'] = 'HOLD'
+            st['hold_time'] = time.time()
+            self._publish_cartepos()
+        else:
+            self.get_logger().info(
+                f'[{axis.upper()}] 卸载静置完成 → 下一台阶 {st["next_checkpoint"]:.1f}N'
             )
             st['phase'] = 'APPROACH'
             st['wait_ctr'] = 0
