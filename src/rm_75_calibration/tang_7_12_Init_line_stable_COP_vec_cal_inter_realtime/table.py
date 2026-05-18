@@ -3,10 +3,8 @@
 import os
 import csv
 import numpy as np
-from datetime import datetime
 
-# 定义CSV表头
-CSV_HEADER = [
+TABLE_CSV_HEADER = [  # CSV 文件表头（84通道 + 时间戳 + 力/角度/标定数据）
     "timestamp", "rel_ms",
     # ch1 ~ ch84
     "ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7",
@@ -25,9 +23,9 @@ CSV_HEADER = [
     "Fx", "Fy", "Fz", "Mx", "My", "Mz",
     # 时间戳相关
     "press_t", "force_t", "dt",
-    # CoP 偏移分量
+    # 新增 CoP 偏移分量
     "delta_CoP_X", "delta_CoP_Y",
-    # Force 分量
+    # 新增 Force 分量
     "delta_Force_X", "delta_Force_Y", "delta_Force_Z",
     # 角度和幅值
     "ADC_angle", "ADC_mag", "Force_angle", "Force_mag",
@@ -36,61 +34,76 @@ CSV_HEADER = [
     "valid"
 ]
 
-LAST_BASE = None  # 最近一次 CSV 的文件名基础，供 realtime.py 生成对应 PNG 名
-
 def auto_get_csv_path(save_dir: str) -> str:
-    global LAST_BASE
+    """
+    自动生成不重复的CSV文件路径（格式：data_1.csv, data_2.csv...）
+    :param save_dir: 保存目录
+    :return: 完整的CSV文件路径
+    """
     os.makedirs(save_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    LAST_BASE = ts
-    return f"{save_dir}/data_{ts}.csv"
+    idx = 1
+    while os.path.exists(f"{save_dir}/data_{idx}.csv"):
+        idx += 1
+    return f"{save_dir}/data_{idx}.csv"
 
-def init_csv_file(file_path: str) -> tuple:
+def init_csv_file(file_path: str) -> tuple[csv.writer, object]:
+    """
+    初始化CSV文件，写入表头并返回writer和文件对象
+    :param file_path: CSV文件路径
+    :return: (csv_writer, csv_file_object)
+    """
     csv_file_obj = open(file_path, "w", encoding="utf-8", newline="")
     csv_writer = csv.writer(csv_file_obj)
-    csv_writer.writerow(CSV_HEADER)
+    csv_writer.writerow(TABLE_CSV_HEADER)
     print(f"📂 CSV文件已初始化：{file_path}")
     return csv_writer, csv_file_obj
 
 def build_csv_row(
-    press_timestamp: float,
-    rel_ms: int,
-    ch_data: list,
-    force_data: list,
-    force_timestamp: float,
-    delta_cop_x: float,
-    delta_cop_y: float,
+    press_timestamp: float,  # 压力传感器时间戳（秒）
+    rel_ms: int,             # 相对毫秒数
+    ch_data: list,           # 84通道压力数据
+    force_data: list,        # 六维力传感器数据 [Fx,Fy,Fz,Mx,My,Mz]
+    force_timestamp: float,  # 力传感器时间戳（秒）
+    delta_cop_x: float,      # 新增 CoP 偏移X分量
+    delta_cop_y: float,      # 新增 CoP 偏移Y分量
     delta_force_x: float,
     delta_force_y: float,
     delta_force_z: float,
-    adc_angle: float,
-    adc_mag: float,
-    force_angle: float,
-    force_mag: float,
-    fx_cal: float = None,
-    fy_cal: float = None,
-    force_cal_mag: float = None,
-    force_cal_angle: float = None,
+    adc_angle: float,        # ADC角度
+    adc_mag: float,          # ADC幅值
+    force_angle: float,      # 力传感器角度
+    force_mag: float,        # 力传感器幅值
+    fx_cal: float = None,    # 标定后切向力 X (N)
+    fy_cal: float = None,    # 标定后切向力 Y (N)
+    force_cal_mag: float = None,   # 标定后幅值 (N)
+    force_cal_angle: float = None, # 标定后角度 (deg)
     valid: int = 0,
 ) -> list:
+    """
+    构造符合表头格式的CSV行数据
+    :return: 完整的CSV行列表
+    """
+    # 计算时间差
     dt = abs(press_timestamp - force_timestamp)
+    
+    # 构造行数据
     csv_row = [
-        press_timestamp * 1000,
-        rel_ms,
-        *ch_data,
-        *force_data,
-        press_timestamp,
-        force_timestamp,
-        dt,
-        delta_cop_x,
-        delta_cop_y,
+        press_timestamp * 1000,  # timestamp：转换为毫秒级
+        rel_ms,                  # rel_ms：相对开始时间的毫秒数
+        *ch_data,                # ch1~ch84：压力传感器84通道数据
+        *force_data,             # Fx,Fy,Fz,Mx,My,Mz：力传感器数据
+        press_timestamp,         # press_t：压力传感器原始时间戳（秒）
+        force_timestamp,         # force_t：力传感器原始时间戳（秒）
+        dt,                      # dt：时间戳差值（秒）
+        delta_cop_x,             # delta_CoP_X
+        delta_cop_y,             # delta_CoP_Y
         delta_force_x,
         delta_force_y,
         delta_force_z,
-        adc_angle,
-        adc_mag,
-        force_angle,
-        force_mag,
+        adc_angle,               # ADC_angle：PZT计算的角度
+        adc_mag,                 # ADC_mag：CoP偏移幅值
+        force_angle,             # Force_angle：力传感器计算的角度
+        force_mag,               # Force_mag：力传感器幅值
         fx_cal if fx_cal is not None else float('nan'),
         fy_cal if fy_cal is not None else float('nan'),
         force_cal_mag if force_cal_mag is not None else float('nan'),

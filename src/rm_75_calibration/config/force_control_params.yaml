@@ -6,7 +6,7 @@
     # ==================== 初始位姿 ====================
     start_x: 0.4315                # 起始 X 坐标 (m)
     start_y: -0.0075               # 起始 Y 坐标 (m)
-    start_z: 0.175                  # 起始 Z 坐标 (m)
+    start_z: 0.175                 # 起始 Z 坐标 (m)
     orientation_x: 0.0             # 末端姿态 X 分量
     orientation_y: 1.0             # 末端姿态 Y 分量
     orientation_z: 0.0             # 末端姿态 Z 分量
@@ -37,7 +37,7 @@
     # ==================== X 轴参数（切向力） ====================
     x_target_force: 5.0            # 目标力值 (N)
     x_step_size: 0.00005           # 精细步长 (m)，0.05mm
-    x_approach_step_size: 0.00005   # 粗调步长 (m)，0.1mm
+    x_approach_step_size: 0.00005  # 粗调步长 (m)，0.1mm
     x_fine_threshold_ratio: 0.8    # 粗→细切换比例
     x_coarse_stabilize_cycles: 10  # 粗调步间等待周期
     x_fine_stabilize_cycles: 50    # 精细步间等待周期
