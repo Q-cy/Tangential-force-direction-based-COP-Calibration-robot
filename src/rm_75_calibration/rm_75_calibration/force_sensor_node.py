@@ -12,7 +12,10 @@ from geometry_msgs.msg import WrenchStamped
 import threading
 import time
 
-from rm_75_calibration.data import SixAxisForceSensor
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..',
+    'tang_7_12_Init_vaule_stable_COP_vec_cal_inter_realtime'))
+from data import SixAxisForceSensor
 
 
 class ForceSensorNode(Node):

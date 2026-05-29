@@ -293,18 +293,30 @@ def data_loop(force_node, phase_node=None):
 # ===================== 主函数 =====================
 def main():
     global g_main_plot
+
+    rclpy.init(args=None)
+    buf_force = data.TimestampedBuffer(500)
+    force_node = ForceDataSubscriber(buf_force)
+    phase_node = PhaseSubscriber()
+    executor = SingleThreadedExecutor()
+    executor.add_node(force_node)
+    executor.add_node(phase_node)
+    spin_thread = threading.Thread(target=ros2_spin, args=(executor,), daemon=True)
+    spin_thread.start()
+
     app = QtWidgets.QApplication.instance()
     if app is None:
         app = QtWidgets.QApplication(sys.argv)
 
     g_main_plot = realtime.RealTimePlot()
-    data_thread = threading.Thread(target=data_loop)
+    data_thread = threading.Thread(target=data_loop, args=(force_node, phase_node))
     data_thread.start()
 
     app.exec()
 
     g_main_stop_flag.set()
     data_thread.join(timeout=2)
+    rclpy.shutdown()
     g_main_plot.plot_full_magnitude_curve(MAIN_SAVE_DIR)
 
 if __name__ == "__main__":
