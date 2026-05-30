@@ -50,6 +50,10 @@ class ForceControlNode(Node):
         self.cartepos_pub = self.create_publisher(Cartepos, '/rm_driver/movep_canfd_cmd', 10)
         self.state_pub = self.create_publisher(String, '/force_control_state', 10)
 
+        # ========== 订阅返回初始点命令 ==========
+        self.return_home_sub = self.create_subscription(
+            String, '/force_control_return_home', self._return_home_callback, 10)
+
         # ========== 全局状态 ==========
         self.state = 'MOVE_TO_START'
         self._move_deadline = 0.0
@@ -144,8 +148,12 @@ class ForceControlNode(Node):
             self._check_movej_done()
             return
         if self.state == 'ESTOP':
+            self._enter_return_home()
             return
         if self.state == 'DONE':
+            self._enter_return_home()
+            return
+        if self.state == 'RETURN_HOME':
             return
 
         # ===== 安全检查 =====
@@ -546,6 +554,30 @@ class ForceControlNode(Node):
             st['prev_pos'] = st['pos']
             self.state = 'FORCE_CONTROL'
 
+    # ==================== 返回初始点 ====================
+    def _return_home_callback(self, msg):
+        self._enter_return_home()
+
+    def _enter_return_home(self):
+        if self.state == 'RETURN_HOME':
+            return
+        self.get_logger().info(
+            f'返回初始点 → ({self.start_x:.4f}, {self.start_y:.4f}, {self.start_z:.4f})'
+        )
+        msg = Movejp()
+        msg.pose.position.x = float(self.start_x)
+        msg.pose.position.y = float(self.start_y)
+        msg.pose.position.z = float(self.start_z)
+        msg.pose.orientation.x = float(self.ori[0])
+        msg.pose.orientation.y = float(self.ori[1])
+        msg.pose.orientation.z = float(self.ori[2])
+        msg.pose.orientation.w = float(self.ori[3])
+        msg.speed = self.movej_speed
+        msg.trajectory_connect = 0
+        msg.block = False
+        self.movej_pub.publish(msg)
+        self.state = 'RETURN_HOME'
+
     # ==================== 发布 Cartepos ====================
     def _publish_cartepos(self):
         msg = Cartepos()
@@ -570,7 +602,9 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('用户中断')
+        node.get_logger().info('用户中断，返回初始点...')
+        node._enter_return_home()
+        time.sleep(6)
     finally:
         node.destroy_node()
         rclpy.shutdown()

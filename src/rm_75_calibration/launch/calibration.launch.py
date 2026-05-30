@@ -15,7 +15,7 @@
 import os
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, ExecuteProcess
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -62,7 +62,10 @@ def generate_launch_description():
         },
     ]
 
-    return LaunchDescription([
+    # 实时显示脚本路径（YAML 中 realtime_script 参数，'none' 禁用）
+    realtime_dir = yaml_defaults.get('realtime_script', 'none')
+
+    items = [
         control_axes_arg,
         z_target_arg,
         x_target_arg,
@@ -81,4 +84,15 @@ def generate_launch_description():
             output='screen',
             parameters=node_params,
         ),
-    ])
+    ]
+
+    if realtime_dir != 'none':
+        items.append(
+            ExecuteProcess(
+                cmd=['python3', 'main.py'],
+                cwd=realtime_dir,
+                output='screen',
+            )
+        )
+
+    return LaunchDescription(items)

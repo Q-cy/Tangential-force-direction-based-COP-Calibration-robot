@@ -2,6 +2,7 @@
   ros__parameters:
     # ==================== 控制模式 ====================
     control_axes: 'yz'              # 控制轴: z / xz / yz / xyz / x / y
+    realtime_script: '/home/qcy/ros2_project_ws/src/rm_75_calibration/tang_7_12_Init_vaule_stable_COP_vec_cal_inter_realtime'  # 实时显示脚本目录，'none' 禁用
 
     # ==================== 初始位姿 ====================
     start_x: 0.4315                # 起始 X 坐标 (m)
@@ -14,46 +15,46 @@
 
     # ==================== 运动参数 ====================
     movej_speed: 20                # MoveJp 关节空间规划速度
-    hold_duration: 1000.0          # 保压时长 (s)，0=无限保压直到手动停止
+    hold_duration: 10.0          # 保压时长 (s)，0=无限保压直到手动停止
     trajectory_duration: 0.0       # 连续运动时长 (s)，>0 时忽略力控做匀速运动
 
     # ==================== Z 轴参数（法向力） ====================
-    z_target_force: 10.0           # 目标力值 (N)
+    z_target_force: 20.0           # 目标力值 (N)
     z_step_size: 0.00005           # 精细步长 (m)，0.05mm
     z_approach_step_size: 0.00005  # 粗调步长 (m)，0.1mm
     z_fine_threshold_ratio: 0.8    # 粗→细切换比例（达到目标力×此值后切换）
     z_coarse_stabilize_cycles: 10  # 粗调步间等待周期（100Hz 下 10=0.1s）
     z_fine_stabilize_cycles: 50    # 精细步间等待周期（100Hz 下 50=0.5s）
     z_drift_threshold: 0.1         # HOLD 漂移阈值 (N)
-    z_step_dwell: 500              # 每步后静置循环数（100Hz，50=0.5s），0=不启用
-    z_force_step: 0.0              # 力值台阶 (N)，>0 时启用力值阶梯模式，0=不启用
+    z_step_dwell: 100              # 每步后静置循环数（100Hz，100=1s），0=不启用
+    z_force_step: 1.0              # 力值台阶 (N)，>0 时启用力值阶梯模式，0=不启用
     z_step_sign: -1                # 运动方向符号: -1=向下（逼近传感器），1=向上
     z_start_delay: 0.0             # 启动延迟 (s)
     z_force_field: 'force.z'       # 对应的 Wrench 字段
     z_force_sign: -1               # 力值符号翻转: -1=取反（向下为正）
-    z_force_tolerance: 0.2         # 力值容差 (N)，|f - target| ≤ 此值视为到达
-    z_cross_axis_drift_multiplier: 2.0  # 他轴运动时 HOLD drift 放大倍数
-    z_control_mode: 'staircase'        # 'staircase' (阶梯递增) or 'load_unload' (加载-卸载循环)
-    z_unload_dwell: 500                # 卸载后静置周期数 (100Hz, 500=5s)
+    z_force_tolerance: 0.1         # 力值容差 (N)，|f - target| ≤ 此值视为到达
+    z_cross_axis_drift_multiplier: 1.0   # 他轴运动时 HOLD drift 放大倍数
+    z_control_mode: 'load_unload'        # 'staircase' (阶梯递增) or 'load_unload' (加载-卸载循环)
+    z_unload_dwell: 100            # 卸载后静置周期数 (100Hz, 500=5s)
 
     # ==================== X 轴参数（切向力） ====================
-    x_target_force: 5.0            # 目标力值 (N)
+    x_target_force: 4.0            # 目标力值 (N)
     x_step_size: 0.00005           # 精细步长 (m)，0.05mm
     x_approach_step_size: 0.00005  # 粗调步长 (m)，0.1mm
     x_fine_threshold_ratio: 0.8    # 粗→细切换比例
     x_coarse_stabilize_cycles: 10  # 粗调步间等待周期
     x_fine_stabilize_cycles: 50    # 精细步间等待周期
     x_drift_threshold: 0.1         # HOLD 漂移阈值 (N)
-    x_step_dwell: 10               # 每步后静置循环数（100Hz，10=0.1s），0=不启用
-    x_force_step: 0.0              # 力值台阶 (N)，>0 时启用力值阶梯模式，0=不启用
+    x_step_dwell: 100               # 每步后静置循环数（100Hz，10=0.1s），0=不启用
+    x_force_step: 1.0              # 力值台阶 (N)，>0 时启用力值阶梯模式，0=不启用
     x_step_sign: 1                 # 运动方向符号
     x_start_delay: 0.0             # 启动延迟 (s)，Z HOLD 后延迟再启动
     x_force_field: 'force.x'       # 对应的 Wrench 字段
     x_force_sign: 1                # 力值符号翻转
-    x_force_tolerance: 0.2         # 力值容差 (N)，|f - target| ≤ 此值视为到达
-    x_cross_axis_drift_multiplier: 2.0  # 他轴运动时 HOLD drift 放大倍数
-    x_control_mode: 'staircase'        # 'staircase' (阶梯递增) or 'load_unload' (加载-卸载循环)
-    x_unload_dwell: 500                # 卸载后静置周期数 (100Hz, 500=5s)
+    x_force_tolerance: 0.1         # 力值容差 (N)，|f - target| ≤ 此值视为到达
+    x_cross_axis_drift_multiplier: 1.0  # 他轴运动时 HOLD drift 放大倍数
+    x_control_mode: 'load_unload'        # 'staircase' (阶梯递增) or 'load_unload' (加载-卸载循环)
+    x_unload_dwell: 100                # 卸载后静置周期数 (100Hz, 500=5s)
 
     # ==================== Y 轴参数（切向力） ====================
     y_target_force: 2.0            # 目标力值 (N)
@@ -71,5 +72,5 @@
     y_force_sign: 1                # 力值符号翻转
     y_force_tolerance: 0.2         # 力值容差 (N)，|f - target| ≤ 此值视为到达
     y_cross_axis_drift_multiplier: 2.0  # 他轴运动时 HOLD drift 放大倍数
-    y_control_mode: 'staircase'        # 'staircase' (阶梯递增) or 'load_unload' (加载-卸载循环)
+    y_control_mode: 'load_unload'        # 'staircase' (阶梯递增) or 'load_unload' (加载-卸载循环)
     y_unload_dwell: 500                # 卸载后静置周期数 (100Hz, 500=5s)

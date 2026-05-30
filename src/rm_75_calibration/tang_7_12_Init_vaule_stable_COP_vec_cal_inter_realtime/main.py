@@ -316,6 +316,12 @@ def main():
 
     g_main_stop_flag.set()
     data_thread.join(timeout=2)
+
+    # 通知 force_control_node 返回初始点
+    return_pub = force_node.create_publisher(String, '/force_control_return_home', 10)
+    return_pub.publish(String(data='return'))
+    time.sleep(1)  # 等待消息发送
+
     rclpy.shutdown()
     g_main_plot.plot_full_magnitude_curve(MAIN_SAVE_DIR)
 

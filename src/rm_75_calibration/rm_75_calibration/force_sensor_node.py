@@ -15,7 +15,7 @@ import time
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..',
     'tang_7_12_Init_vaule_stable_COP_vec_cal_inter_realtime'))
-from data import SixAxisForceSensor
+from data import SixAxisForceSensor  # noqa: E402  # type: ignore
 
 
 class ForceSensorNode(Node):
