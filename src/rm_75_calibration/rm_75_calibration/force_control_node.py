@@ -1,36 +1,79 @@
 #!/usr/bin/env python3
 """
-恒力保压控制节点（多轴通用步进试探式）
-- 通过 control_axes 参数选择控制轴: "x", "y", "z", "xz", "xy", "xyz"
-- 每轴独立参数（步长、目标力、方向、延迟等），完全可自定义
-- 时序: MoveJp → Z轴优先下压 → 其余轴按 start_delay 依次激活 → 各轴 HOLD 漂移纠偏
-- 订阅 /force_sensor_data，发布 /rm_driver/movej_p_cmd + /rm_driver/movep_canfd_cmd
-
-参数统一管理: config/force_control_params.yaml — 唯一参数来源
+恒力保压控制节点（三轴网格遍历模式）
+- Z 轴：法向力 Fz 保压控制（步进试探）
+- X 轴：切向力 Fy 保压控制（步进试探）
+- Y 轴：切向力 Fx 保压控制（步进试探）
+- 网格遍历：Z×Y×X 所有力目标组合依次执行
 """
 
-import os
-import yaml
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import WrenchStamped
 from std_msgs.msg import String
 from rm_ros_interfaces.msg import Movejp, Cartepos
-from ament_index_python.packages import get_package_share_directory
 import time
+import itertools
 
 
 class ForceControlNode(Node):
     def __init__(self):
         super().__init__('force_control_node')
 
-        # 从 YAML 加载所有参数默认值（唯一参数来源）
-        pkg_share = get_package_share_directory('rm_75_calibration')
-        yaml_path = os.path.join(pkg_share, 'config', 'force_control_params.yaml')
-        with open(yaml_path, 'r') as f:
-            yaml_params = yaml.safe_load(f)['/force_control_node']['ros__parameters']
-        for key, val in yaml_params.items():
-            self.declare_parameter(key, val)
+        # ==================== Z 轴参数（法向力 Fz） ====================
+        self.declare_parameter('z_target_force', 20.0)
+        self.declare_parameter('z_step_size', 0.00005)
+        self.declare_parameter('z_approach_step_size', 0.0001)
+        self.declare_parameter('z_fine_threshold_ratio', 0.8)
+        self.declare_parameter('z_coarse_stabilize_cycles', 10)
+        self.declare_parameter('z_fine_stabilize_cycles', 50)
+        self.declare_parameter('z_drift_threshold', 0.2)
+        self.declare_parameter('z_force_tolerance', 0.1)
+
+        # ==================== X 轴参数（切向力 Fy） ====================
+        self.declare_parameter('x_target_force', 5.0)
+        self.declare_parameter('x_step_size', 0.00005)
+        self.declare_parameter('x_approach_step_size', 0.0001)
+        self.declare_parameter('x_fine_threshold_ratio', 0.8)
+        self.declare_parameter('x_coarse_stabilize_cycles', 10)
+        self.declare_parameter('x_fine_stabilize_cycles', 50)
+        self.declare_parameter('x_drift_threshold', 0.2)
+        self.declare_parameter('x_step_sign', 1)
+        self.declare_parameter('x_start_delay', 0.0)
+        self.declare_parameter('x_force_tolerance', 0.1)
+
+        # ==================== Y 轴参数（切向力 Fx） ====================
+        self.declare_parameter('y_target_force', 2.0)
+        self.declare_parameter('y_step_size', 0.00005)
+        self.declare_parameter('y_approach_step_size', 0.0001)
+        self.declare_parameter('y_fine_threshold_ratio', 0.8)
+        self.declare_parameter('y_coarse_stabilize_cycles', 10)
+        self.declare_parameter('y_fine_stabilize_cycles', 50)
+        self.declare_parameter('y_drift_threshold', 0.2)
+        self.declare_parameter('y_step_sign', 1)
+        self.declare_parameter('y_start_delay', 0.0)
+        self.declare_parameter('y_force_tolerance', 0.2)
+
+        # ==================== 通用参数 ====================
+        self.declare_parameter('movej_speed', 15)
+        self.declare_parameter('start_x', 0.432)
+        self.declare_parameter('start_y', -0.0065)
+        self.declare_parameter('start_z', 0.18)
+        self.declare_parameter('orientation_x', 0.0)
+        self.declare_parameter('orientation_y', 1.0)
+        self.declare_parameter('orientation_z', 0.0)
+        self.declare_parameter('orientation_w', 0.0)
+        self.declare_parameter('control_axes', 'xyz')
+        self.declare_parameter('hold_duration', 10.0)
+
+        # ==================== 网格参数 ====================
+        from rclpy.parameter import Parameter
+        self.declare_parameter('z_target_force_grid', Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter('y_target_force_grid', Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter('x_target_force_grid', Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter('grid_hold_duration', 5.0)
+        self.declare_parameter('grid_step_dwell', 0)
+        self.declare_parameter('grid_unload_dwell', 0)
 
         self._read_params()
 
@@ -38,59 +81,121 @@ class ForceControlNode(Node):
         self.ori = [self.ori_x, self.ori_y, self.ori_z, self.ori_w]
 
         # ========== 订阅 ==========
-        self.current_fx = 0.0
-        self.current_fy = 0.0
         self.current_fz = 0.0
+        self.current_fy = 0.0
+        self.current_fx = 0.0
         self.force_sub = self.create_subscription(
             WrenchStamped, '/force_sensor_data', self._force_callback, 10
+        )
+        self.return_home_sub = self.create_subscription(
+            String, '/force_control_return_home', self._return_home_callback, 10
         )
 
         # ========== 发布 ==========
         self.movej_pub = self.create_publisher(Movejp, '/rm_driver/movej_p_cmd', 10)
         self.cartepos_pub = self.create_publisher(Cartepos, '/rm_driver/movep_canfd_cmd', 10)
-        self.state_pub = self.create_publisher(String, '/force_control_state', 10)
 
-        # ========== 订阅返回初始点命令 ==========
-        self.return_home_sub = self.create_subscription(
-            String, '/force_control_return_home', self._return_home_callback, 10)
+        # ==================== Z 轴状态 ====================
+        self.current_z = self.start_z
+        self.z_phase = 'IDLE'
+        self.z_wait_counter = 0
+        self.z_prev_fz = 0.0
+        self.z_prev_z = self.start_z
+        self.z_error_before = 0.0
+        self.z_hold_z = 0.0
+        self.z_total_descent = 0.0
+        self.z_hold_time = 0.0
+
+        # ==================== X 轴状态 ====================
+        self.current_x = self.start_x
+        self.x_phase = 'IDLE'
+        self.x_wait_counter = 0
+        self.x_prev_fy = 0.0
+        self.x_prev_x = self.start_x
+        self.x_error_before = 0.0
+        self.x_hold_x = 0.0
+
+        # ==================== Y 轴状态 ====================
+        self.current_y = self.start_y
+        self.y_phase = 'IDLE'
+        self.y_wait_counter = 0
+        self.y_prev_f = 0.0
+        self.y_prev_y = self.start_y
+        self.y_error_before = 0.0
+        self.y_hold_y = 0.0
+
+        # ==================== 网格 ====================
+        z_vals = self.z_target_grid if self.z_target_grid else [self.z_target]
+        y_vals = self.y_target_grid if self.y_target_grid else [self.y_target]
+        x_vals = self.x_target_grid if self.x_target_grid else [self.x_target]
+
+        if 'z' not in self.active_axes:
+            z_vals = [None]
+        if 'y' not in self.active_axes:
+            y_vals = [None]
+        if 'x' not in self.active_axes:
+            x_vals = [None]
+
+        self.grid_points = list(itertools.product(z_vals, y_vals, x_vals))
+        self.grid_index = 0
+        self.grid_hold_start_time = None
+        self.grid_dwell_start_time = None
+        self.grid_phase = 'IDLE'  # IDLE → FORCE_CONTROL → DWELL → RETURN → UNLOAD
+        self.grid_dwell_counter = 0
+        self.grid_unload_counter = 0
 
         # ========== 全局状态 ==========
         self.state = 'MOVE_TO_START'
-        self._move_deadline = 0.0
-        self._log_seq = 0
 
-        # ========== 每轴状态 ==========
-        start_pos = {'x': self.start_x, 'y': self.start_y, 'z': self.start_z}
-        self.ax = {}
-        for a in self.active_axes:
-            self.ax[a] = {
-                'phase': 'IDLE',
-                'pos': start_pos[a],
-                'wait_ctr': 0,
-                'prev_force': 0.0,
-                'prev_pos': start_pos[a],
-                'error_before': 0.0,
-                'hold_pos': start_pos[a],
-                'hold_time': 0.0,
-                'next_checkpoint': 0.0,
-                'drift_boosted': False,
-                'backoff_attempts': 0,
-                'best_err': 1e9,
-                'best_pos': start_pos[a],
-            }
+        # ========== 日志 ==========
+        self._log_seq = 0
+        self._status_seq = 0
 
         # ========== 100Hz 控制定时器 ==========
         time.sleep(3.0)
         self.ctrl_timer = self.create_timer(0.01, self._control_callback)
         self.get_logger().info(
-            f'多轴恒力控制节点启动 | 控制轴={self.control_axes} | '
-            f'激活轴={self.active_axes}'
+            f'恒力保压控制节点启动 | 控制轴={self.active_axes} | '
+            f'网格点数={len(self.grid_points)}'
         )
 
     # ==================== 参数读取 ====================
     def _read_params(self):
-        self.control_axes = self.get_parameter('control_axes').value
-        self.active_axes = list(self.control_axes)
+        # Z
+        self.z_target = self.get_parameter('z_target_force').value
+        self.z_step = self.get_parameter('z_step_size').value
+        self.z_approach_step = self.get_parameter('z_approach_step_size').value
+        self.z_fine_ratio = self.get_parameter('z_fine_threshold_ratio').value
+        self.z_coarse_wait = self.get_parameter('z_coarse_stabilize_cycles').value
+        self.z_fine_wait = self.get_parameter('z_fine_stabilize_cycles').value
+        self.z_drift = self.get_parameter('z_drift_threshold').value
+        self.z_tolerance = self.get_parameter('z_force_tolerance').value
+        self.z_force_limit = self.z_target * 1.5
+        # X
+        self.x_target = self.get_parameter('x_target_force').value
+        self.x_step = self.get_parameter('x_step_size').value
+        self.x_approach_step = self.get_parameter('x_approach_step_size').value
+        self.x_fine_ratio = self.get_parameter('x_fine_threshold_ratio').value
+        self.x_coarse_wait = self.get_parameter('x_coarse_stabilize_cycles').value
+        self.x_fine_wait = self.get_parameter('x_fine_stabilize_cycles').value
+        self.x_drift = self.get_parameter('x_drift_threshold').value
+        self.x_step_sign = self.get_parameter('x_step_sign').value
+        self.x_start_delay = self.get_parameter('x_start_delay').value
+        self.x_tolerance = self.get_parameter('x_force_tolerance').value
+        self.x_force_limit = self.x_target * 3.0
+        # Y
+        self.y_target = self.get_parameter('y_target_force').value
+        self.y_step = self.get_parameter('y_step_size').value
+        self.y_approach_step = self.get_parameter('y_approach_step_size').value
+        self.y_fine_ratio = self.get_parameter('y_fine_threshold_ratio').value
+        self.y_coarse_wait = self.get_parameter('y_coarse_stabilize_cycles').value
+        self.y_fine_wait = self.get_parameter('y_fine_stabilize_cycles').value
+        self.y_drift = self.get_parameter('y_drift_threshold').value
+        self.y_step_sign = self.get_parameter('y_step_sign').value
+        self.y_start_delay = self.get_parameter('y_start_delay').value
+        self.y_tolerance = self.get_parameter('y_force_tolerance').value
+        self.y_force_limit = self.y_target * 3.0
+        # common
         self.movej_speed = self.get_parameter('movej_speed').value
         self.start_x = self.get_parameter('start_x').value
         self.start_y = self.get_parameter('start_y').value
@@ -99,45 +204,28 @@ class ForceControlNode(Node):
         self.ori_y = self.get_parameter('orientation_y').value
         self.ori_z = self.get_parameter('orientation_z').value
         self.ori_w = self.get_parameter('orientation_w').value
-        self.trajectory_duration = self.get_parameter('trajectory_duration').value
         self.hold_duration = self.get_parameter('hold_duration').value
+        # control_axes
+        self.control_axes = self.get_parameter('control_axes').value
+        self.active_axes = set(self.control_axes.lower().replace(' ', ''))
+        # grid
+        self.z_target_grid = self.get_parameter('z_target_force_grid').value
+        self.y_target_grid = self.get_parameter('y_target_force_grid').value
+        self.x_target_grid = self.get_parameter('x_target_force_grid').value
+        self.grid_hold_duration = self.get_parameter('grid_hold_duration').value
+        self.grid_step_dwell = self.get_parameter('grid_step_dwell').value
+        self.grid_unload_dwell = self.get_parameter('grid_unload_dwell').value
 
-        self.cfg = {}
-        for a in ('x', 'y', 'z'):
-            self.cfg[a] = {
-                'target': self.get_parameter(f'{a}_target_force').value,
-                'step': self.get_parameter(f'{a}_step_size').value,
-                'approach': self.get_parameter(f'{a}_approach_step_size').value,
-                'fine_ratio': self.get_parameter(f'{a}_fine_threshold_ratio').value,
-                'coarse_wait': self.get_parameter(f'{a}_coarse_stabilize_cycles').value,
-                'fine_wait': self.get_parameter(f'{a}_fine_stabilize_cycles').value,
-                'drift': self.get_parameter(f'{a}_drift_threshold').value,
-                'step_sign': self.get_parameter(f'{a}_step_sign').value,
-                'start_delay': self.get_parameter(f'{a}_start_delay').value,
-                'force_field': self.get_parameter(f'{a}_force_field').value,
-                'force_sign': self.get_parameter(f'{a}_force_sign').value,
-                'force_step': self.get_parameter(f'{a}_force_step').value,
-                'step_dwell': self.get_parameter(f'{a}_step_dwell').value,
-                'tolerance': self.get_parameter(f'{a}_force_tolerance').value,
-                'cross_drift_mul': self.get_parameter(f'{a}_cross_axis_drift_multiplier').value,
-                'control_mode': str(self.get_parameter(f'{a}_control_mode').value),
-                'unload_dwell': self.get_parameter(f'{a}_unload_dwell').value,
-            }
-            self.cfg[a]['force_limit'] = (
-                self.cfg[a]['target'] * 3.0 if a in ('x', 'y')
-                else self.cfg[a]['target'] * 1.5
-            )
+    # ==================== 回初始位置回调 ====================
+    def _return_home_callback(self, msg):
+        self.get_logger().info('收到回初始位置指令')
+        self.state = 'MOVE_TO_START'
 
     # ==================== 力传感器回调 ====================
     def _force_callback(self, msg):
-        self.current_fx = msg.wrench.force.x
+        self.current_fz = msg.wrench.force.z * (-1)
         self.current_fy = msg.wrench.force.y
-        self.current_fz = msg.wrench.force.z
-
-    def _get_force(self, axis):
-        """返回带符号的当前力值"""
-        raw = {'x': self.current_fx, 'y': self.current_fy, 'z': self.current_fz}[axis]
-        return raw * self.cfg[axis]['force_sign']
+        self.current_fx = msg.wrench.force.x
 
     # ==================== 100Hz 主循环 ====================
     def _control_callback(self):
@@ -148,379 +236,93 @@ class ForceControlNode(Node):
             self._check_movej_done()
             return
         if self.state == 'ESTOP':
-            self._enter_return_home()
             return
         if self.state == 'DONE':
-            self._enter_return_home()
-            return
-        if self.state == 'RETURN_HOME':
             return
 
         # ===== 安全检查 =====
-        for a in self.active_axes:
-            f = abs(self._get_force(a))
-            if f > self.cfg[a]['force_limit']:
-                self.get_logger().error(
-                    f'[{a.upper()}] 力超限 force={f:.2f}N > {self.cfg[a]["force_limit"]}N，紧急停止！'
-                )
-                self.state = 'ESTOP'
-                return
+        if 'z' in self.active_axes and abs(self.current_fz) > self.z_force_limit:
+            self.get_logger().error(f'Z力超限 Fz={self.current_fz:.2f}>{self.z_force_limit}N')
+            self.state = 'ESTOP'; return
+        if 'x' in self.active_axes and abs(self.current_fx) > self.x_force_limit:
+            self.get_logger().error(f'X力超限 Fx={self.current_fx:.2f}>{self.x_force_limit}N')
+            self.state = 'ESTOP'; return
+        if 'y' in self.active_axes and abs(self.current_fy) > self.y_force_limit:
+            self.get_logger().error(f'Y力超限 Fy={self.current_fy:.2f}>{self.y_force_limit}N')
+            self.state = 'ESTOP'; return
 
-        # ===== 运行每轴状态机（优先级: z → x → y） =====
-        activation_order = sorted(self.active_axes, key=lambda a: {'z': 0, 'x': 1, 'y': 2}[a])
-        any_publish = False
-        for a in activation_order:
-            prev_phase = self.ax[a]['phase']
-            if self._run_axis_machine(a):
-                any_publish = True
-            # 本轴刚进入 HOLD → 清除其他轴的 drift_boosted
-            if prev_phase != 'HOLD' and self.ax[a]['phase'] == 'HOLD':
-                for other in activation_order:
-                    if other != a:
-                        self.ax[other]['drift_boosted'] = False
-
-        if any_publish:
-            self._publish_cartepos()
-
-        # 发布当前各轴 phase（供 realtime 进程判断有效数据）
-        phases = ','.join(f'{a}:{self.ax[a]["phase"]}' for a in activation_order)
-        self.state_pub.publish(String(data=phases))
-
-        # ===== 检查全部轴 HOLD → 可选的持续保压时间 → DONE =====
-        if self.hold_duration > 0:
-            all_hold = all(self.ax[a]['phase'] == 'HOLD' for a in self.active_axes)
-            if all_hold:
-                earliest_hold = min(self.ax[a]['hold_time'] for a in self.active_axes)
-                if time.time() - earliest_hold >= self.hold_duration:
-                    self.get_logger().info(
-                        f'保压时长 {self.hold_duration:.1f}s 已达到，停止控制'
-                    )
-                    self.state = 'DONE'
-
-    # ==================== 单轴状态机 ====================
-    def _run_axis_machine(self, axis):
-        """返回是否需要发布 Cartepos"""
-        st = self.ax[axis]
-
-        if st['phase'] == 'IDLE':
-            return self._axis_check_activation(axis)
-
-        if st['phase'] == 'HOLD':
-            return self._axis_hold_monitor(axis)
-
-        # 活跃阶段：步间等待
-        if st['wait_ctr'] > 0:
-            st['wait_ctr'] -= 1
-            return True
-
-        if st['phase'] == 'APPROACH':
-            self._axis_evaluate_approach(axis)
-        elif st['phase'] == 'CHECKPOINT_BACKOFF':
-            self._axis_checkpoint_backoff(axis)
-        elif st['phase'] == 'STEP_DWELL':
-            self._axis_step_dwell(axis)
-        elif st['phase'] == 'LOAD_HOLD':
-            self._axis_load_hold(axis)
-        elif st['phase'] == 'UNLOAD':
-            self._axis_do_unload(axis)
-        elif st['phase'] == 'UNLOAD_DWELL':
-            self._axis_unload_dwell(axis)
-        elif st['phase'] == 'FINE_TUNE_WAIT':
-            self._axis_evaluate_fine_tune(axis)
-        elif st['phase'] == 'RECOVER_WAIT':
-            self._axis_evaluate_recover(axis)
-        return True
-
-    def _axis_check_activation(self, axis):
-        """检查是否满足激活条件（前置轴已 HOLD 且延迟已过）"""
-        cfg = self.cfg[axis]
-
-        # 确定前置轴：z 无前置，x/y 的前置是 z
-        prereq = {'z': None, 'x': 'z', 'y': 'z'}[axis]
-
-        if prereq and prereq in self.ax:
-            if self.ax[prereq]['phase'] != 'HOLD':
-                return False
-
-        # 如果有延迟，检查时间
-        if cfg['start_delay'] > 0 and prereq and prereq in self.ax:
-            if time.time() - self.ax[prereq]['hold_time'] < cfg['start_delay']:
-                return False
-
-        self.get_logger().info(
-            f'[{axis.upper()}] 启动 | 目标={cfg["target"]:.1f}N '
-            f'步长={cfg["step"]*1e3:.2f}mm sign={cfg["step_sign"]}'
-        )
-        # 放大其他 HOLD 轴的漂移阈值，避免交叉耦合导致误纠偏
-        for a in self.active_axes:
-            if a != axis and self.ax[a]['phase'] == 'HOLD':
-                self.ax[a]['drift_boosted'] = True
-        st = self.ax[axis]
-        st['phase'] = 'APPROACH'
-        st['wait_ctr'] = 0
-        st['prev_force'] = abs(self._get_force(axis))
-        st['prev_pos'] = st['pos']
-        st['next_checkpoint'] = cfg.get('force_step', 0)
-        return True
-
-    # ---------- 逼近评估 ----------
-    def _axis_evaluate_approach(self, axis):
-        cfg = self.cfg[axis]
-        st = self.ax[axis]
-        f = self._get_force(axis)
-        f_abs = abs(f)
-        tol = cfg.get('tolerance', 0.1)
-
-        # 力值阶梯模式：容差到达 + crossing 逻辑（与最终目标一致）
-        force_step = cfg.get('force_step', 0)
-        if force_step > 0 and abs(f_abs - st['next_checkpoint']) <= tol:
-            e_prev = abs(st['next_checkpoint'] - st['prev_force'])
-            e_curr = abs(st['next_checkpoint'] - f_abs)
+        # ===== 周期打印力值和坐标（每秒一次） =====
+        self._status_seq += 1
+        if self._status_seq % 100 == 0:
             self.get_logger().info(
-                f'[{axis.upper()}] 阶梯 {st["next_checkpoint"]:.1f}N 到达 | '
-                f'prev={st["prev_force"]:.2f} err={e_prev:.2f} | curr={f_abs:.2f} err={e_curr:.2f}'
+                f'[STATUS] 网格{self.grid_index+1}/{len(self.grid_points)} phase={self.grid_phase} | '
+                f'力 Fz={self.current_fz:.2f} Fy={self.current_fy:.2f} Fx={self.current_fx:.2f}N | '
+                f'坐标 X={self.current_x:.6f} Y={self.current_y:.6f} Z={self.current_z:.6f} | '
+                f'Z:{self.z_phase} X:{self.x_phase} Y:{self.y_phase}'
             )
-            if e_prev <= e_curr:
-                st['pos'] = st['prev_pos']
-                self.get_logger().info(f'[{axis.upper()}] >>> prev更接近 → 回退 + 静置')
+
+        # ===== 网格阶段状态机 =====
+        if self.grid_phase == 'FORCE_CONTROL':
+            # 运行各轴状态机
+            any_publish = False
+            if 'z' in self.active_axes:
+                any_publish |= self._run_z_machine()
+            if 'x' in self.active_axes:
+                any_publish |= self._run_x_machine()
+            if 'y' in self.active_axes:
+                any_publish |= self._run_y_machine()
+            # 检查是否全部到位
+            if self._all_axes_hold():
+                self._start_dwell()
+            if any_publish:
                 self._publish_cartepos()
-            else:
-                self.get_logger().info(f'[{axis.upper()}] >>> curr更接近 → 静置')
-            dwell = cfg.get('step_dwell', 50)
-            if cfg.get('control_mode', 'staircase') == 'load_unload':
-                st['phase'] = 'LOAD_HOLD'
-            else:
-                st['phase'] = 'STEP_DWELL'
-            st['wait_ctr'] = dwell
-            self._publish_cartepos()
-            return
 
-        # 最终目标检测（容差 + crossing 逻辑）
-        if abs(f_abs - cfg['target']) <= tol:
-            e_prev = abs(cfg['target'] - st['prev_force'])
-            e_curr = abs(cfg['target'] - f_abs)
-            self.get_logger().info(
-                f'[{axis.upper()}] 跨越 {cfg["target"]:.1f}N | '
-                f'prev={st["prev_force"]:.2f} err={e_prev:.2f} | curr={f_abs:.2f} err={e_curr:.2f}'
-            )
-            if e_prev <= e_curr:
-                st['pos'] = st['prev_pos']
-                self.get_logger().info(
-                    f'[{axis.upper()}] >>> prev更接近 → HOLD pos={st["pos"]:.6f}'
-                )
-                st['phase'] = 'HOLD'
-                st['hold_time'] = time.time()
+        elif self.grid_phase == 'DWELL':
+            # 保压阶段：继续力控（漂移纠偏）
+            any_publish = False
+            if 'z' in self.active_axes:
+                any_publish |= self._run_z_machine()
+            if 'x' in self.active_axes:
+                any_publish |= self._run_x_machine()
+            if 'y' in self.active_axes:
+                any_publish |= self._run_y_machine()
+            self.grid_dwell_counter -= 1
+            if self.grid_dwell_counter <= 0:
+                self._start_return()
+            if any_publish:
                 self._publish_cartepos()
-            else:
-                st['error_before'] = e_curr
-                st['hold_pos'] = st['pos']
-                self.get_logger().info(f'[{axis.upper()}] curr更接近 → 精调一步')
-                self._axis_do_step(axis, cfg['step'], cfg['fine_wait'])
-                st['phase'] = 'FINE_TUNE_WAIT'
-            return
 
-        # 过冲检测：力值已远超下一个台阶 → 退回调优
-        if force_step > 0 and f_abs > st['next_checkpoint'] + tol:
-            st['backoff_attempts'] = 0
-            st['best_err'] = 1e9
-            st['best_pos'] = st['pos']
-            self.get_logger().info(
-                f'[{axis.upper()}] 过冲检测：force={f_abs:.2f} > '
-                f'checkpoint={st["next_checkpoint"]:.1f}+tol={tol:.1f} → 退回调优'
-            )
-            st['phase'] = 'CHECKPOINT_BACKOFF'
-            self._axis_checkpoint_backoff(axis)
-            return
+        elif self.grid_phase == 'RETURN':
+            # 只等 MoveJp 完成，不发布 Cartepos（避免冲突）
+            if time.time() >= self._move_deadline:
+                self._start_unload()
 
-        st['prev_force'] = f_abs
-        st['prev_pos'] = st['pos']
-        fine_th = cfg['target'] * cfg['fine_ratio']
-        if f_abs < fine_th:
-            self._axis_do_step(axis, cfg['approach'], cfg['coarse_wait'], tag='粗')
+        elif self.grid_phase == 'UNLOAD':
+            # MoveJp 已完成，发布 Cartepos 维持初始位置
+            self._publish_cartepos()
+            self.grid_unload_counter -= 1
+            if self.grid_unload_counter <= 0:
+                self._advance_grid()
+
+    # ==================== 网格阶段辅助方法 ====================
+    def _all_axes_hold(self):
+        return all(self._get_axis_phase(a) == 'HOLD' for a in self.active_axes)
+
+    def _start_dwell(self):
+        # 保压时间：优先用 grid_step_dwell（循环数），否则用 grid_hold_duration（秒）
+        if self.grid_step_dwell > 0:
+            self.grid_dwell_counter = self.grid_step_dwell
         else:
-            self._axis_do_step(axis, cfg['step'], cfg['fine_wait'], tag='细')
-
-    # ---------- 过冲退回调优 ----------
-    def _axis_checkpoint_backoff(self, axis):
-        st = self.ax[axis]
-        cfg = self.cfg[axis]
-        f_abs = abs(self._get_force(axis))
-        tol = cfg.get('tolerance', 0.1)
-
-        err = abs(f_abs - st['next_checkpoint'])
-        if err < st['best_err']:
-            st['best_err'] = err
-            st['best_pos'] = st['pos']
-        st['backoff_attempts'] += 1
-
-        # 进入容差 → 成功
-        if err <= tol:
-            self.get_logger().info(
-                f'[{axis.upper()}] 回退成功：force={f_abs:.2f}N → 台阶 {st["next_checkpoint"]:.1f}N'
-            )
-            st['phase'] = 'STEP_DWELL'
-            st['wait_ctr'] = cfg.get('step_dwell', 50)
-            self._publish_cartepos()
-            return
-
-        # 超过最大尝试次数 → 取最接近位置
-        if st['backoff_attempts'] >= 10:
-            st['pos'] = st['best_pos']
-            self.get_logger().info(
-                f'[{axis.upper()}] 回退超限 → 取最佳位置 pos={st["pos"]:.6f} '
-                f'(best_err={st["best_err"]:.2f}N)'
-            )
-            st['phase'] = 'STEP_DWELL'
-            st['wait_ctr'] = cfg.get('step_dwell', 50)
-            self._publish_cartepos()
-            return
-
-        # 反向精细步进
-        self._axis_do_step(axis, cfg['step'], cfg['fine_wait'], direction='rev', tag='回退')
-
-    # ---------- 台阶静置 ----------
-    def _axis_step_dwell(self, axis):
-        st = self.ax[axis]
-        cfg = self.cfg[axis]
-        force_step = cfg.get('force_step', 0)
-        st['next_checkpoint'] += force_step
-        if st['next_checkpoint'] >= cfg['target']:
-            self.get_logger().info(
-                f'[{axis.upper()}] 台阶静置完成 → 最终目标 {cfg["target"]:.1f}N 已到达，进入 HOLD'
-            )
-            st['phase'] = 'HOLD'
-            st['hold_time'] = time.time()
-            self._publish_cartepos()
-        else:
-            self.get_logger().info(
-                f'[{axis.upper()}] 台阶静置完成 → 下一台阶 {st["next_checkpoint"]:.1f}N'
-            )
-            st['phase'] = 'APPROACH'
-            st['wait_ctr'] = 0
-
-    # ---------- 加载-卸载模式：保压 ----------
-    def _axis_load_hold(self, axis):
-        st = self.ax[axis]
-        st['phase'] = 'UNLOAD'
-        st['wait_ctr'] = 0
-        st['unload_start_pos'] = st['pos']
-        self.get_logger().info(f'[{axis.upper()}] 保压完成 → 开始卸载')
-
-    # ---------- 加载-卸载模式：抬起卸载 ----------
-    def _axis_do_unload(self, axis):
-        cfg = self.cfg[axis]
-        st = self.ax[axis]
-        f_abs = abs(self._get_force(axis))
-
-        if f_abs <= cfg.get('tolerance', 0.1):
-            dwell = cfg.get('unload_dwell', 500)
-            self.get_logger().info(
-                f'[{axis.upper()}] 卸载完成 force={f_abs:.2f}N → 静置 {dwell} 周期'
-            )
-            st['phase'] = 'UNLOAD_DWELL'
-            st['wait_ctr'] = dwell
-            return
-
-        self._axis_do_step(axis, cfg['approach'], cfg['coarse_wait'], direction='rev', tag='卸载')
-
-    # ---------- 加载-卸载模式：卸载后静置 ----------
-    def _axis_unload_dwell(self, axis):
-        st = self.ax[axis]
-        st['next_checkpoint'] += self.cfg[axis].get('force_step', 0)
-        if st['next_checkpoint'] >= self.cfg[axis]['target']:
-            self.get_logger().info(
-                f'[{axis.upper()}] 全部台阶完成 → 最终目标 {self.cfg[axis]["target"]:.1f}N'
-            )
-            st['phase'] = 'HOLD'
-            st['hold_time'] = time.time()
-            self._publish_cartepos()
-        else:
-            self.get_logger().info(
-                f'[{axis.upper()}] 卸载静置完成 → 下一台阶 {st["next_checkpoint"]:.1f}N'
-            )
-            st['phase'] = 'APPROACH'
-            st['wait_ctr'] = 0
-
-    # ---------- 精调评估 ----------
-    def _axis_evaluate_fine_tune(self, axis):
-        st = self.ax[axis]
-        cfg = self.cfg[axis]
-        e_after = abs(cfg['target'] - abs(self._get_force(axis)))
+            self.grid_dwell_counter = int(self.grid_hold_duration * 100)
+        self.grid_phase = 'DWELL'
         self.get_logger().info(
-            f'[{axis.upper()}] 精调 err {st["error_before"]:.2f}→{e_after:.2f}N'
+            f'[GRID] 全部轴HOLD → DWELL {self.grid_dwell_counter} 周期 '
+            f'(点 {self.grid_index + 1}/{len(self.grid_points)})'
         )
-        if e_after <= st['error_before']:
-            self.get_logger().info(f'[{axis.upper()}] >>> 精调OK → HOLD')
-        else:
-            st['pos'] = st['hold_pos']
-            self.get_logger().info(f'[{axis.upper()}] >>> 回退 → HOLD pos={st["pos"]:.6f}')
-            self._publish_cartepos()
-        st['phase'] = 'HOLD'
-        st['hold_time'] = time.time()
 
-    # ---------- 纠偏评估 ----------
-    def _axis_evaluate_recover(self, axis):
-        st = self.ax[axis]
-        cfg = self.cfg[axis]
-        e_after = abs(cfg['target'] - abs(self._get_force(axis)))
-        self.get_logger().info(
-            f'[{axis.upper()}] 纠偏 err {st["error_before"]:.2f}→{e_after:.2f}N'
-        )
-        if e_after <= st['error_before']:
-            self.get_logger().info(f'[{axis.upper()}] >>> 纠偏OK → HOLD')
-        else:
-            st['pos'] = st['prev_pos']
-            self.get_logger().info(f'[{axis.upper()}] >>> 无效回退 → HOLD pos={st["pos"]:.6f}')
-            self._publish_cartepos()
-        st['phase'] = 'HOLD'
-
-    # ---------- HOLD 漂移监控 ----------
-    def _axis_hold_monitor(self, axis):
-        cfg = self.cfg[axis]
-        st = self.ax[axis]
-        f_abs = abs(self._get_force(axis))
-        error = abs(cfg['target'] - f_abs)
-        effective_drift = cfg['drift'] * (cfg.get('cross_drift_mul', 3.0) if st.get('drift_boosted') else 1.0)
-
-        if error > effective_drift:
-            st['prev_force'] = f_abs
-            st['prev_pos'] = st['pos']
-            st['error_before'] = error
-            direction = 'fwd' if f_abs < cfg['target'] else 'rev'
-            self.get_logger().info(
-                f'[{axis.upper()}-HOLD] 漂移 force={f_abs:.2f}N '
-                f'err={error:.2f}>{effective_drift:.2f}N → {direction}步进'
-            )
-            self._axis_do_step(axis, cfg['step'], cfg['fine_wait'], direction=direction)
-            st['phase'] = 'RECOVER_WAIT'
-            return True
-
-        return False
-
-    # ---------- 单步执行 ----------
-    def _axis_do_step(self, axis, step, wait_cycles, direction='fwd', tag=''):
-        cfg = self.cfg[axis]
-        st = self.ax[axis]
-
-        if direction == 'fwd':
-            st['pos'] += cfg['step_sign'] * step
-        else:
-            st['pos'] -= cfg['step_sign'] * step
-
-        st['wait_ctr'] = wait_cycles
-        self._log_seq += 1
-        if self._log_seq % 10 == 0:
-            label = tag if tag else ('→' if direction == 'fwd' else '←')
-            self.get_logger().info(
-                f'[{axis.upper()}{label}] {step*1e3:.2f}mm | '
-                f'pos={st["pos"]:.6f} | force={abs(self._get_force(axis)):.2f}N'
-            )
-
-    # ==================== 初始定位 ====================
-    def _enter_move_to_start(self):
-        self.get_logger().info(
-            f'MoveJp → ({self.start_x:.4f}, {self.start_y:.4f}, {self.start_z:.4f})'
-        )
+    def _start_return(self):
+        self.get_logger().info('[GRID] DWELL完成 → RETURN 回初始位置')
+        self.grid_phase = 'RETURN'
         msg = Movejp()
         msg.pose.position.x = float(self.start_x)
         msg.pose.position.y = float(self.start_y)
@@ -533,57 +335,466 @@ class ForceControlNode(Node):
         msg.trajectory_connect = 0
         msg.block = False
         self.movej_pub.publish(msg)
-        for a in self.active_axes:
-            self.ax[a]['pos'] = {'x': self.start_x, 'y': self.start_y, 'z': self.start_z}[a]
+        self._move_deadline = time.time() + 5.0
+
+    def _start_unload(self):
+        self.get_logger().info('[GRID] 到达初始位置 → UNLOAD')
+        # 重置位置
+        self.current_z = self.start_z
+        self.current_x = self.start_x
+        self.current_y = self.start_y
+        self._publish_cartepos()
+        self.grid_unload_counter = self.grid_unload_dwell
+        self.grid_phase = 'UNLOAD'
+
+    def _advance_grid(self):
+        self.grid_index += 1
+        if self.grid_index >= len(self.grid_points):
+            self.get_logger().info('[GRID] 全部网格点完成')
+            self.state = 'DONE'
+            return
+
+        z_t, y_t, x_t = self.grid_points[self.grid_index]
+        self.get_logger().info(
+            f'[GRID] 移动到点 {self.grid_index + 1}/{len(self.grid_points)}: '
+            f'z={z_t}, y={y_t}, x={x_t}'
+        )
+
+        if z_t is not None:
+            self.z_target = z_t
+            self.z_force_limit = max(z_t * 1.5, 5.0)
+            self._reset_axis('z')
+        if y_t is not None:
+            self.y_target = y_t
+            self.y_force_limit = max(y_t * 3.0, 5.0)
+            self._reset_axis('y')
+        if x_t is not None:
+            self.x_target = x_t
+            self.x_force_limit = max(x_t * 3.0, 5.0)
+            self._reset_axis('x')
+
+        self.grid_hold_start_time = None
+        self.grid_dwell_start_time = None
+        self.grid_phase = 'FORCE_CONTROL'
+
+    def _get_axis_phase(self, axis):
+        if axis == 'z': return self.z_phase
+        if axis == 'y': return self.y_phase
+        if axis == 'x': return self.x_phase
+
+    def _reset_axis(self, axis):
+        if axis == 'z':
+            if self.z_target == 0:
+                self.z_phase = 'HOLD'
+            else:
+                self.z_phase = 'APPROACH'
+                self.z_wait_counter = 0
+                self.z_prev_fz = self.current_fz
+                self.z_prev_z = self.current_z
+        elif axis == 'y':
+            if self.y_target == 0:
+                self.y_phase = 'HOLD'
+            else:
+                self.y_phase = 'IDLE'  # 等 Z HOLD 后再启动
+        elif axis == 'x':
+            if self.x_target == 0:
+                self.x_phase = 'HOLD'
+            else:
+                self.x_phase = 'IDLE'  # 等 Y HOLD 后再启动
+
+    # ==================== Z 轴状态机 ====================
+    def _run_z_machine(self):
+        if self.z_phase == 'HOLD':
+            return self._z_hold_monitor()
+        if self.z_wait_counter > 0:
+            self.z_wait_counter -= 1
+            return True
+        if self.z_phase == 'APPROACH':
+            self._z_evaluate_approach()
+        elif self.z_phase == 'FINE_TUNE_WAIT':
+            self._z_evaluate_fine_tune()
+        elif self.z_phase == 'RECOVER_WAIT':
+            self._z_evaluate_recover()
+        return True
+
+    def _z_hold_monitor(self):
+        error = abs(self.z_target - self.current_fz)
+        if error > self.z_drift:
+            self.z_prev_fz = self.current_fz
+            self.z_prev_z = self.current_z
+            self.z_error_before = error
+            direction = 'down' if self.current_fz < self.z_target else 'up'
+            self.get_logger().info(
+                f'[Z-HOLD] 漂移 Fz={self.current_fz:.2f}N err={error:.2f}>{self.z_drift}N → 向{direction}步进'
+            )
+            self._z_do_step(self.z_step, self.z_fine_wait, direction=direction)
+            self.z_phase = 'RECOVER_WAIT'
+            return True
+        return False
+
+    def _z_evaluate_approach(self):
+        if self.current_fz >= self.z_target:
+            e_prev = abs(self.z_target - self.z_prev_fz)
+            e_curr = abs(self.z_target - self.current_fz)
+            self.get_logger().info(
+                f'[Z] 跨越 {self.z_target:.1f}N | '
+                f'prev Fz={self.z_prev_fz:.2f} err={e_prev:.2f} | curr Fz={self.current_fz:.2f} err={e_curr:.2f}'
+            )
+            if e_prev <= e_curr:
+                self.current_z = self.z_prev_z
+                self.get_logger().info(f'[Z] >>> prev更接近 err={e_prev:.2f}≤{e_curr:.2f} → HOLD Z={self.current_z:.6f}')
+                self.z_phase = 'HOLD'
+                self.z_hold_time = time.time()
+                self._publish_cartepos()
+            else:
+                self.z_error_before = e_curr
+                self.z_hold_z = self.current_z
+                self.get_logger().info(f'[Z] curr更接近 err={e_curr:.2f}<{e_prev:.2f} → 精调一步')
+                self._z_do_step(self.z_step, self.z_fine_wait)
+                self.z_phase = 'FINE_TUNE_WAIT'
+            return
+
+        self.z_prev_fz = self.current_fz
+        self.z_prev_z = self.current_z
+        fine_th = self.z_target * self.z_fine_ratio
+        if self.current_fz < fine_th:
+            self._z_do_step(self.z_approach_step, self.z_coarse_wait, tag='Z粗')
+        else:
+            self._z_do_step(self.z_step, self.z_fine_wait, tag='Z细')
+
+    def _z_evaluate_fine_tune(self):
+        e_after = abs(self.z_target - self.current_fz)
+        self.get_logger().info(f'[Z] 精调 err {self.z_error_before:.2f}→{e_after:.2f}N')
+        if e_after <= self.z_error_before:
+            self.get_logger().info(f'[Z] >>> 精调OK → HOLD Z={self.current_z:.6f}')
+        else:
+            self.current_z = self.z_hold_z
+            self.get_logger().info(f'[Z] >>> 回退 → HOLD Z={self.current_z:.6f}')
+            self._publish_cartepos()
+        self.z_phase = 'HOLD'
+        self.z_hold_time = time.time()
+
+    def _z_evaluate_recover(self):
+        e_after = abs(self.z_target - self.current_fz)
+        self.get_logger().info(f'[Z] 纠偏 err {self.z_error_before:.2f}→{e_after:.2f}N')
+        if e_after <= self.z_error_before:
+            self.get_logger().info(f'[Z] >>> 纠偏OK → HOLD')
+        else:
+            self.current_z = self.z_prev_z
+            self.get_logger().info(f'[Z] >>> 纠偏无效 回退 → HOLD Z={self.current_z:.6f}')
+            self._publish_cartepos()
+        self.z_phase = 'HOLD'
+
+    def _z_do_step(self, step, wait_cycles, direction='down', tag=''):
+        if direction == 'down':
+            self.current_z -= step
+            self.z_total_descent += step
+        else:
+            self.current_z += step
+        self.z_wait_counter = wait_cycles
+        self._log_seq += 1
+        if self._log_seq % 10 == 0:
+            label = tag if tag else ('↓' if direction == 'down' else '↑')
+            self.get_logger().info(
+                f'[Z{label}] {step*1e3:.2f}mm | Z={self.current_z:.6f} | Fz={self.current_fz:.2f}N'
+            )
+
+    # ==================== X 轴状态机 ====================
+    def _run_x_machine(self):
+        if self.x_phase == 'IDLE':
+            if self.x_target == 0:
+                self.x_phase = 'HOLD'
+                return True
+            y_ready = (self.y_phase == 'HOLD') or ('y' not in self.active_axes)
+            if self.z_phase == 'HOLD' and y_ready and self.z_hold_time > 0:
+                if time.time() - self.z_hold_time >= self.x_start_delay:
+                    self.get_logger().info(
+                        f'[X] Z保压{self.x_start_delay:.0f}s到，启动X轴 '
+                        f'(目标Fx={self.x_target:.1f}N sign={self.x_step_sign})'
+                    )
+                    self.x_phase = 'APPROACH'
+                    self.x_wait_counter = 0
+                    self.x_prev_fy = abs(self.current_fx)
+                    self.x_prev_x = self.current_x
+                else:
+                    return False
+            else:
+                return False
+
+        if self.x_phase == 'HOLD':
+            return self._x_hold_monitor()
+
+        if self.x_wait_counter > 0:
+            self.x_wait_counter -= 1
+            return True
+
+        if self.x_phase == 'APPROACH':
+            self._x_evaluate_approach()
+        elif self.x_phase == 'FINE_TUNE_WAIT':
+            self._x_evaluate_fine_tune()
+        elif self.x_phase == 'RECOVER_WAIT':
+            self._x_evaluate_recover()
+        return True
+
+    def _x_hold_monitor(self):
+        error = abs(self.x_target - abs(self.current_fx))
+        if error > self.x_drift:
+            self.x_prev_fy = abs(self.current_fx)
+            self.x_prev_x = self.current_x
+            self.x_error_before = error
+            direction = 'fwd' if abs(self.current_fx) < self.x_target else 'rev'
+            self.get_logger().info(
+                f'[X-HOLD] 漂移 |Fx|={abs(self.current_fx):.2f}N err={error:.2f}>{self.x_drift}N → {direction}步进'
+            )
+            self._x_do_step(self.x_step, self.x_fine_wait, direction=direction)
+            self.x_phase = 'RECOVER_WAIT'
+            return True
+        return False
+
+    def _x_evaluate_approach(self):
+        fx_abs = abs(self.current_fx)
+        if fx_abs >= self.x_target:
+            e_prev = abs(self.x_target - self.x_prev_fy)
+            e_curr = abs(self.x_target - fx_abs)
+            self.get_logger().info(
+                f'[X] 跨越 {self.x_target:.1f}N | '
+                f'prev |Fx|={self.x_prev_fy:.2f} err={e_prev:.2f} | curr |Fx|={fx_abs:.2f} err={e_curr:.2f}'
+            )
+            if e_prev <= e_curr:
+                self.current_x = self.x_prev_x
+                self.get_logger().info(f'[X] >>> prev更接近 err={e_prev:.2f}≤{e_curr:.2f} → HOLD X={self.current_x:.6f}')
+                self.x_phase = 'HOLD'
+                self._publish_cartepos()
+            else:
+                self.x_error_before = e_curr
+                self.x_hold_x = self.current_x
+                self.get_logger().info(f'[X] curr更接近 err={e_curr:.2f}<{e_prev:.2f} → 精调一步')
+                self._x_do_step(self.x_step, self.x_fine_wait)
+                self.x_phase = 'FINE_TUNE_WAIT'
+            return
+
+        self.x_prev_fy = fx_abs
+        self.x_prev_x = self.current_x
+        fine_th = self.x_target * self.x_fine_ratio
+        if fx_abs < fine_th:
+            self._x_do_step(self.x_approach_step, self.x_coarse_wait, tag='X粗')
+        else:
+            self._x_do_step(self.x_step, self.x_fine_wait, tag='X细')
+
+    def _x_evaluate_fine_tune(self):
+        e_after = abs(self.x_target - abs(self.current_fx))
+        self.get_logger().info(f'[X] 精调 err {self.x_error_before:.2f}→{e_after:.2f}N')
+        if e_after <= self.x_error_before:
+            self.get_logger().info(f'[X] >>> 精调OK → HOLD X={self.current_x:.6f}')
+        else:
+            self.current_x = self.x_hold_x
+            self.get_logger().info(f'[X] >>> 回退 → HOLD X={self.current_x:.6f}')
+            self._publish_cartepos()
+        self.x_phase = 'HOLD'
+
+    def _x_evaluate_recover(self):
+        e_after = abs(self.x_target - abs(self.current_fx))
+        self.get_logger().info(f'[X] 纠偏 err {self.x_error_before:.2f}→{e_after:.2f}N')
+        if e_after <= self.x_error_before:
+            self.get_logger().info(f'[X] >>> 纠偏OK → HOLD')
+        else:
+            self.current_x = self.x_prev_x
+            self.get_logger().info(f'[X] >>> 纠偏无效 回退 → HOLD X={self.current_x:.6f}')
+            self._publish_cartepos()
+        self.x_phase = 'HOLD'
+
+    def _x_do_step(self, step, wait_cycles, tag='', direction='fwd'):
+        if direction == 'fwd':
+            self.current_x += self.x_step_sign * step
+        else:
+            self.current_x -= self.x_step_sign * step
+        self.x_wait_counter = wait_cycles
+        self._log_seq += 1
+        if self._log_seq % 10 == 0:
+            label = tag if tag else ('→' if direction == 'fwd' else '←')
+            self.get_logger().info(
+                f'[X{label}] {step*1e3:.2f}mm | X={self.current_x:.6f} | |Fx|={abs(self.current_fx):.2f}N'
+            )
+
+    # ==================== Y 轴状态机 ====================
+    def _run_y_machine(self):
+        if self.y_phase == 'IDLE':
+            if self.y_target == 0:
+                self.y_phase = 'HOLD'
+                return True
+            if self.z_phase == 'HOLD' and self.z_hold_time > 0:
+                if time.time() - self.z_hold_time >= self.y_start_delay:
+                    self.get_logger().info(
+                        f'[Y] Z保压{self.y_start_delay:.0f}s到，启动Y轴 '
+                        f'(目标Fy={self.y_target:.1f}N sign={self.y_step_sign})'
+                    )
+                    self.y_phase = 'APPROACH'
+                    self.y_wait_counter = 0
+                    self.y_prev_f = abs(self.current_fy)
+                    self.y_prev_y = self.current_y
+                else:
+                    return False
+            else:
+                return False
+
+        if self.y_phase == 'HOLD':
+            return self._y_hold_monitor()
+
+        if self.y_wait_counter > 0:
+            self.y_wait_counter -= 1
+            return True
+
+        if self.y_phase == 'APPROACH':
+            self._y_evaluate_approach()
+        elif self.y_phase == 'FINE_TUNE_WAIT':
+            self._y_evaluate_fine_tune()
+        elif self.y_phase == 'RECOVER_WAIT':
+            self._y_evaluate_recover()
+        return True
+
+    def _y_hold_monitor(self):
+        error = abs(self.y_target - abs(self.current_fy))
+        if error > self.y_drift:
+            self.y_prev_f = abs(self.current_fy)
+            self.y_prev_y = self.current_y
+            self.y_error_before = error
+            direction = 'fwd' if abs(self.current_fy) < self.y_target else 'rev'
+            self.get_logger().info(
+                f'[Y-HOLD] 漂移 |Fy|={abs(self.current_fy):.2f}N err={error:.2f}>{self.y_drift}N → {direction}步进'
+            )
+            self._y_do_step(self.y_step, self.y_fine_wait, direction=direction)
+            self.y_phase = 'RECOVER_WAIT'
+            return True
+        return False
+
+    def _y_evaluate_approach(self):
+        fy_abs = abs(self.current_fy)
+        if fy_abs >= self.y_target:
+            e_prev = abs(self.y_target - self.y_prev_f)
+            e_curr = abs(self.y_target - fy_abs)
+            self.get_logger().info(
+                f'[Y] 跨越 {self.y_target:.1f}N | '
+                f'prev |Fy|={self.y_prev_f:.2f} err={e_prev:.2f} | curr |Fy|={fy_abs:.2f} err={e_curr:.2f}'
+            )
+            if e_prev <= e_curr:
+                self.current_y = self.y_prev_y
+                self.get_logger().info(f'[Y] >>> prev更接近 err={e_prev:.2f}≤{e_curr:.2f} → HOLD Y={self.current_y:.6f}')
+                self.y_phase = 'HOLD'
+                self._publish_cartepos()
+            else:
+                self.y_error_before = e_curr
+                self.y_hold_y = self.current_y
+                self.get_logger().info(f'[Y] curr更接近 err={e_curr:.2f}<{e_prev:.2f} → 精调一步')
+                self._y_do_step(self.y_step, self.y_fine_wait)
+                self.y_phase = 'FINE_TUNE_WAIT'
+            return
+
+        self.y_prev_f = fy_abs
+        self.y_prev_y = self.current_y
+        fine_th = self.y_target * self.y_fine_ratio
+        if fy_abs < fine_th:
+            self._y_do_step(self.y_approach_step, self.y_coarse_wait, tag='Y粗')
+        else:
+            self._y_do_step(self.y_step, self.y_fine_wait, tag='Y细')
+
+    def _y_evaluate_fine_tune(self):
+        e_after = abs(self.y_target - abs(self.current_fy))
+        self.get_logger().info(f'[Y] 精调 err {self.y_error_before:.2f}→{e_after:.2f}N')
+        if e_after <= self.y_error_before:
+            self.get_logger().info(f'[Y] >>> 精调OK → HOLD Y={self.current_y:.6f}')
+        else:
+            self.current_y = self.y_hold_y
+            self.get_logger().info(f'[Y] >>> 回退 → HOLD Y={self.current_y:.6f}')
+            self._publish_cartepos()
+        self.y_phase = 'HOLD'
+
+    def _y_evaluate_recover(self):
+        e_after = abs(self.y_target - abs(self.current_fy))
+        self.get_logger().info(f'[Y] 纠偏 err {self.y_error_before:.2f}→{e_after:.2f}N')
+        if e_after <= self.y_error_before:
+            self.get_logger().info(f'[Y] >>> 纠偏OK → HOLD')
+        else:
+            self.current_y = self.y_prev_y
+            self.get_logger().info(f'[Y] >>> 纠偏无效 回退 → HOLD Y={self.current_y:.6f}')
+            self._publish_cartepos()
+        self.y_phase = 'HOLD'
+
+    def _y_do_step(self, step, wait_cycles, tag='', direction='fwd'):
+        if direction == 'fwd':
+            self.current_y += self.y_step_sign * step
+        else:
+            self.current_y -= self.y_step_sign * step
+        self.y_wait_counter = wait_cycles
+        self._log_seq += 1
+        if self._log_seq % 10 == 0:
+            label = tag if tag else ('→' if direction == 'fwd' else '←')
+            self.get_logger().info(
+                f'[Y{label}] {step*1e3:.2f}mm | Y={self.current_y:.6f} | |Fy|={abs(self.current_fy):.2f}N'
+            )
+
+    # ==================== 初始定位 ====================
+    def _enter_move_to_start(self):
+        self.get_logger().info(f'MoveJp → ({self.start_x:.4f}, {self.start_y:.4f}, {self.start_z:.4f})')
+        msg = Movejp()
+        msg.pose.position.x = float(self.start_x)
+        msg.pose.position.y = float(self.start_y)
+        msg.pose.position.z = float(self.start_z)
+        msg.pose.orientation.x = float(self.ori[0])
+        msg.pose.orientation.y = float(self.ori[1])
+        msg.pose.orientation.z = float(self.ori[2])
+        msg.pose.orientation.w = float(self.ori[3])
+        msg.speed = self.movej_speed
+        msg.trajectory_connect = 0
+        msg.block = False
+        self.movej_pub.publish(msg)
+        self.current_z = self.start_z
+        self.current_x = self.start_x
+        self.current_y = self.start_y
         self._move_deadline = time.time() + 5.0
         self.state = 'WAIT_MOVEJ'
 
     def _check_movej_done(self):
         if time.time() >= self._move_deadline:
-            # 按优先级激活第一个轴（z > x > y）
-            first = sorted(self.active_axes, key=lambda a: {'z': 0, 'x': 1, 'y': 2}[a])[0]
-            cfg = self.cfg[first]
+            # 应用首个网格点
+            z_t, y_t, x_t = self.grid_points[0]
+            if z_t is not None:
+                self.z_target = z_t
+                self.z_force_limit = max(z_t * 1.5, 5.0)
+            if y_t is not None:
+                self.y_target = y_t
+                self.y_force_limit = max(y_t * 3.0, 5.0)
+            if x_t is not None:
+                self.x_target = x_t
+                self.x_force_limit = max(x_t * 3.0, 5.0)
+
             self.get_logger().info(
-                f'到达初始位姿 → 启动 [{first.upper()}] 轴 '
-                f'(目标={cfg["target"]:.1f}N)'
+                f'到达初始位姿 → 网格点 1/{len(self.grid_points)}: '
+                f'z={z_t}, y={y_t}, x={x_t}'
             )
-            st = self.ax[first]
-            st['phase'] = 'APPROACH'
-            st['wait_ctr'] = 0
-            st['prev_force'] = abs(self._get_force(first))
-            st['prev_pos'] = st['pos']
+
+            if 'z' in self.active_axes:
+                self.z_phase = 'APPROACH'
+                self.z_wait_counter = 0
+                self.z_total_descent = 0.0
+                self.z_prev_fz = self.current_fz
+                self.z_prev_z = self.current_z
+
+            if 'y' in self.active_axes and 'z' not in self.active_axes:
+                self.y_phase = 'APPROACH'
+                self.y_wait_counter = 0
+            if 'x' in self.active_axes and 'z' not in self.active_axes:
+                self.x_phase = 'APPROACH'
+                self.x_wait_counter = 0
+
             self.state = 'FORCE_CONTROL'
-
-    # ==================== 返回初始点 ====================
-    def _return_home_callback(self, msg):
-        self._enter_return_home()
-
-    def _enter_return_home(self):
-        if self.state == 'RETURN_HOME':
-            return
-        self.get_logger().info(
-            f'返回初始点 → ({self.start_x:.4f}, {self.start_y:.4f}, {self.start_z:.4f})'
-        )
-        msg = Movejp()
-        msg.pose.position.x = float(self.start_x)
-        msg.pose.position.y = float(self.start_y)
-        msg.pose.position.z = float(self.start_z)
-        msg.pose.orientation.x = float(self.ori[0])
-        msg.pose.orientation.y = float(self.ori[1])
-        msg.pose.orientation.z = float(self.ori[2])
-        msg.pose.orientation.w = float(self.ori[3])
-        msg.speed = self.movej_speed
-        msg.trajectory_connect = 0
-        msg.block = False
-        self.movej_pub.publish(msg)
-        self.state = 'RETURN_HOME'
+            self.grid_phase = 'FORCE_CONTROL'
 
     # ==================== 发布 Cartepos ====================
     def _publish_cartepos(self):
         msg = Cartepos()
-        msg.pose.position.x = float(self.ax['x']['pos'] if 'x' in self.ax else self.start_x)
-        msg.pose.position.y = float(self.ax['y']['pos'] if 'y' in self.ax else self.start_y)
-        msg.pose.position.z = float(self.ax['z']['pos'] if 'z' in self.ax else self.start_z)
+        msg.pose.position.x = float(self.current_x)
+        msg.pose.position.y = float(self.current_y)
+        msg.pose.position.z = float(self.current_z)
         msg.pose.orientation.x = float(self.ori[0])
         msg.pose.orientation.y = float(self.ori[1])
         msg.pose.orientation.z = float(self.ori[2])
@@ -602,9 +813,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('用户中断，返回初始点...')
-        node._enter_return_home()
-        time.sleep(6)
+        node.get_logger().info('用户中断')
     finally:
         node.destroy_node()
         rclpy.shutdown()
