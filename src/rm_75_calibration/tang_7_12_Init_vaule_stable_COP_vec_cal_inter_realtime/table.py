@@ -31,21 +31,26 @@ TABLE_CSV_HEADER = [  # CSV 文件表头（84通道 + 时间戳 + 力/角度/标
     "ADC_angle", "ADC_mag", "Force_angle", "Force_mag",
     # 标定后的切向力
     "Fx_cal", "Fy_cal", "Force_cal_mag", "Force_cal_angle",
-    # 接触状态
-    "CoP_state"
+    # 有效标志: 0=Z未到位, 1=Z到位
+    "valid"
 ]
 
 def auto_get_csv_path(save_dir: str) -> str:
     """
-    自动生成不重复的CSV文件路径（格式：data_1.csv, data_2.csv...）
+    自动生成不重复的CSV文件路径（格式：data_20260604_111900.csv）
     :param save_dir: 保存目录
     :return: 完整的CSV文件路径
     """
+    import datetime
     os.makedirs(save_dir, exist_ok=True)
-    idx = 1
-    while os.path.exists(f"{save_dir}/data_{idx}.csv"):
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = f"{save_dir}/data_{ts}.csv"
+    # 如果同名文件已存在，加序号
+    idx = 2
+    while os.path.exists(path):
+        path = f"{save_dir}/data_{ts}_{idx}.csv"
         idx += 1
-    return f"{save_dir}/data_{idx}.csv"
+    return path
 
 def init_csv_file(file_path: str) -> tuple[csv.writer, object]:
     """

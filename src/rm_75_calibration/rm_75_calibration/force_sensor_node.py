@@ -12,9 +12,10 @@ from geometry_msgs.msg import WrenchStamped
 import threading
 import time
 
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..',
-    'tang_7_12_Init_vaule_stable_COP_vec_cal_inter_realtime'))
+import sys
+_realtime_dir = '/home/qcy/ros2_project_ws/src/rm_75_calibration/tang_7_12_Init_vaule_stable_COP_vec_cal_inter_realtime'
+if _realtime_dir not in sys.path:
+    sys.path.insert(0, _realtime_dir)
 from data import SixAxisForceSensor  # noqa: E402  # type: ignore
 
 

@@ -255,7 +255,7 @@ def data_loop(force_node, phase_node=None):
             fy_cal=cal_fy_val,
             force_cal_mag=cal_mag_val,
             force_cal_angle=cal_angle_deg,
-            cop_state=cop_state,
+            cop_state=int(phase_node.latest_phase) if phase_node.latest_phase.isdigit() else 0,
             adc_sum=total_press_val,
         )
         csv_writer.writerow(csv_row)

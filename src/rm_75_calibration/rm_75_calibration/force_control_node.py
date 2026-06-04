@@ -74,6 +74,8 @@ class ForceControlNode(Node):
         self.declare_parameter('x_force_ratio', 0.2)
         self.declare_parameter('y_step_ratio', 0.2)
         self.declare_parameter('x_step_ratio', 0.2)
+        self.declare_parameter('y_direction_mode', 3)
+        self.declare_parameter('x_direction_mode', 3)
         self.declare_parameter('grid_hold_duration', 5.0)
         self.declare_parameter('grid_step_dwell', 0)
         self.declare_parameter('grid_unload_dwell', 0)
@@ -97,6 +99,7 @@ class ForceControlNode(Node):
         # ========== 发布 ==========
         self.movej_pub = self.create_publisher(Movejp, '/rm_driver/movej_p_cmd', 10)
         self.cartepos_pub = self.create_publisher(Cartepos, '/rm_driver/movep_canfd_cmd', 10)
+        self.valid_pub = self.create_publisher(String, '/force_control_state', 10)
 
         # ==================== Z 轴状态 ====================
         self.current_z = self.start_z
@@ -138,14 +141,26 @@ class ForceControlNode(Node):
         x_step = self.z_force_range_step * self.x_step_ratio
         all_grid = []
         for z in z_vals:
-            y_max = z * self.y_force_ratio
-            x_max = z * self.x_force_ratio
-            # Y: 0 → +max → -max（不含0）
-            y_vals = list(np.arange(0, y_max + y_step * 0.5, y_step))
-            y_vals += list(np.arange(-y_step, -y_max - y_step * 0.5, -y_step))
-            # X: 0 → +max → -max（不含0）
-            x_vals = list(np.arange(0, x_max + x_step * 0.5, x_step))
-            x_vals += list(np.arange(-x_step, -x_max - x_step * 0.5, -x_step))
+            # Y: 只在 active_axes 中时生成目标值
+            if 'y' in self.active_axes:
+                y_max = z * self.y_force_ratio
+                y_vals = []
+                if self.y_direction_mode in (1, 3):  # 正
+                    y_vals += list(np.arange(0, y_max + y_step * 0.5, y_step))
+                if self.y_direction_mode in (2, 3):  # 负
+                    y_vals += list(np.arange(-y_step, -y_max - y_step * 0.5, -y_step))
+            else:
+                y_vals = [0]
+            # X: 只在 active_axes 中时生成目标值
+            if 'x' in self.active_axes:
+                x_max = z * self.x_force_ratio
+                x_vals = []
+                if self.x_direction_mode in (1, 3):  # 正
+                    x_vals += list(np.arange(0, x_max + x_step * 0.5, x_step))
+                if self.x_direction_mode in (2, 3):  # 负
+                    x_vals += list(np.arange(-x_step, -x_max - x_step * 0.5, -x_step))
+            else:
+                x_vals = [0]
             for y in y_vals:
                 for x in x_vals:
                     all_grid.append((z, y, x))
@@ -229,6 +244,8 @@ class ForceControlNode(Node):
         self.x_force_ratio = self.get_parameter('x_force_ratio').value
         self.y_step_ratio = self.get_parameter('y_step_ratio').value
         self.x_step_ratio = self.get_parameter('x_step_ratio').value
+        self.y_direction_mode = self.get_parameter('y_direction_mode').value
+        self.x_direction_mode = self.get_parameter('x_direction_mode').value
         self.grid_hold_duration = self.get_parameter('grid_hold_duration').value
         self.grid_step_dwell = self.get_parameter('grid_step_dwell').value
         self.grid_unload_dwell = self.get_parameter('grid_unload_dwell').value
@@ -257,9 +274,13 @@ class ForceControlNode(Node):
         if self.state == 'DONE':
             return
 
+        # ===== 发布 valid 状态（DWELL且全HOLD时为网格点序号，其他为0） =====
+        valid = self.grid_index + 1 if self.grid_phase == 'DWELL' and self._all_axes_hold() else 0
+        self.valid_pub.publish(String(data=str(valid)))
+
         # ===== 安全检查 =====
-        if abs(self.current_fz) > self.z_force_range_max:
-            self.get_logger().error(f'Z力={self.current_fz:.1f}N 超过范围上限 {self.z_force_range_max}N → ESTOP')
+        if abs(self.current_fz) > self.z_force_range_max * 1.5:
+            self.get_logger().error(f'Z力={self.current_fz:.1f}N 超过安全限 {self.z_force_range_max*1.5}N → ESTOP')
             self.state = 'ESTOP'
             return
         if 'z' in self.active_axes and abs(self.current_fz) > self.z_force_limit:
@@ -288,28 +309,23 @@ class ForceControlNode(Node):
         # ===== 网格阶段状态机 =====
         if self.grid_phase == 'FORCE_CONTROL':
             any_publish = False
-            if 'z' in self.active_axes:
-                any_publish |= self._run_z_machine()
+            any_publish |= self._run_z_machine()
 
             # Z 保压计数
             if self.z_phase == 'HOLD' and self.z_dwell_counter > 0:
                 self.z_dwell_counter -= 1
                 # Z 保压完成，更新 X/Y 为实际网格目标
                 if self.z_dwell_counter == 0:
-                    if 'y' in self.active_axes:
-                        self.y_target = self._grid_y_target
-                        self.y_force_limit = max(self._grid_y_target * 3.0, 5.0)
-                        self._reset_axis('y')
-                    if 'x' in self.active_axes:
-                        self.x_target = self._grid_x_target
-                        self.x_force_limit = max(self._grid_x_target * 3.0, 5.0)
-                        self._reset_axis('x')
+                    self.y_target = self._grid_y_target
+                    self.y_force_limit = max(abs(self._grid_y_target) * 3.0, 5.0)
+                    self._reset_axis('y')
+                    self.x_target = self._grid_x_target
+                    self.x_force_limit = max(abs(self._grid_x_target) * 3.0, 5.0)
+                    self._reset_axis('x')
 
-            # X/Y 始终运行（target=0 时维持 0N，Z 保压后切换到实际目标）
-            if 'x' in self.active_axes:
-                any_publish |= self._run_x_machine()
-            if 'y' in self.active_axes:
-                any_publish |= self._run_y_machine()
+            # 所有轴始终运行力控
+            any_publish |= self._run_x_machine()
+            any_publish |= self._run_y_machine()
 
             # 全部到位 → 网格保压
             if self._all_axes_hold() and self.z_dwell_counter <= 0:
@@ -320,13 +336,12 @@ class ForceControlNode(Node):
         elif self.grid_phase == 'DWELL':
             # 保压阶段：继续力控（漂移纠偏）
             any_publish = False
-            if 'z' in self.active_axes:
-                any_publish |= self._run_z_machine()
-            if 'x' in self.active_axes:
-                any_publish |= self._run_x_machine()
-            if 'y' in self.active_axes:
-                any_publish |= self._run_y_machine()
-            self.grid_dwell_counter -= 1
+            any_publish |= self._run_z_machine()
+            any_publish |= self._run_x_machine()
+            any_publish |= self._run_y_machine()
+            # 只有所有轴都 HOLD 时才计数
+            if self._all_axes_hold():
+                self.grid_dwell_counter -= 1
             if self.grid_dwell_counter <= 0:
                 self._start_return()
             if any_publish:
@@ -406,13 +421,21 @@ class ForceControlNode(Node):
             self.z_target = z_t
             self.z_force_limit = max(z_t * 1.5, 5.0)
             self._reset_axis('z')
-        # X/Y 初始目标为 0，Z 保压后再更新
-        self.y_target = 0
-        self.y_force_limit = 5.0
-        self._reset_axis('y')
-        self.x_target = 0
-        self.x_force_limit = 5.0
-        self._reset_axis('x')
+        # X/Y 初始目标为 0，Z 保压后再更新（不活跃的轴直接 HOLD）
+        if 'y' in self.active_axes:
+            self.y_target = 0
+            self.y_force_limit = 5.0
+            self._reset_axis('y')
+        else:
+            self.y_target = 0
+            self.y_phase = 'HOLD'
+        if 'x' in self.active_axes:
+            self.x_target = 0
+            self.x_force_limit = 5.0
+            self._reset_axis('x')
+        else:
+            self.x_target = 0
+            self.x_phase = 'HOLD'
 
         self.grid_hold_start_time = None
         self.grid_dwell_start_time = None
@@ -553,7 +576,7 @@ class ForceControlNode(Node):
         return True
 
     def _x_hold_monitor(self):
-        error = abs(self.x_target - abs(self.current_fx))
+        error = abs(abs(self.x_target) - abs(self.current_fx))
         if error > self.x_drift:
             self.x_prev_fy = abs(self.current_fx)
             self.x_prev_x = self.current_x
@@ -561,7 +584,10 @@ class ForceControlNode(Node):
             if self.x_target == 0:
                 direction = 'fwd' if self.current_fx < 0 else 'rev'
             else:
-                direction = 'fwd' if abs(self.current_fx) < self.x_target else 'rev'
+                if self.x_target >= 0:
+                    direction = 'fwd' if self.current_fx < self.x_target else 'rev'
+                else:
+                    direction = 'rev' if self.current_fx < self.x_target else 'fwd'
             self._x_do_step(self.x_step, self.x_fine_wait, direction=direction)
             self.x_phase = 'RECOVER_WAIT'
             return True
@@ -569,6 +595,7 @@ class ForceControlNode(Node):
 
     def _x_evaluate_approach(self):
         fx_abs = abs(self.current_fx)
+        x_target_abs = abs(self.x_target)
         # target=0 特殊处理：直接根据力方向步进
         if self.x_target == 0:
             if fx_abs <= self.x_tolerance:
@@ -578,9 +605,12 @@ class ForceControlNode(Node):
             else:
                 self._x_do_step(self.x_step, self.x_fine_wait, direction='fwd')
             return
-        if fx_abs >= self.x_target:
-            e_prev = abs(self.x_target - self.x_prev_fy)
-            e_curr = abs(self.x_target - fx_abs)
+        # 跨越判断：正目标 force>=target，负目标 force<=target
+        crossed = (self.x_target >= 0 and self.current_fx >= self.x_target) or \
+                  (self.x_target < 0 and self.current_fx <= self.x_target)
+        if crossed:
+            e_prev = abs(x_target_abs - self.x_prev_fy)
+            e_curr = abs(x_target_abs - fx_abs)
             if e_prev <= e_curr:
                 self.current_x = self.x_prev_x
                 self.x_phase = 'HOLD'
@@ -588,31 +618,40 @@ class ForceControlNode(Node):
             else:
                 self.x_error_before = e_curr
                 self.x_hold_x = self.current_x
-                self._x_do_step(self.x_step, self.x_fine_wait)
+                step_dir = 'fwd' if self.x_target >= 0 else 'rev'
+                self._x_do_step(self.x_step, self.x_fine_wait, direction=step_dir)
                 self.x_phase = 'FINE_TUNE_WAIT'
             return
 
         self.x_prev_fy = fx_abs
         self.x_prev_x = self.current_x
-        fine_th = self.x_target * self.x_fine_ratio
+        fine_th = x_target_abs * self.x_fine_ratio
+        step_dir = 'fwd' if self.x_target >= 0 else 'rev'
         if fx_abs < fine_th:
-            self._x_do_step(self.x_approach_step, self.x_coarse_wait)
+            self._x_do_step(self.x_approach_step, self.x_coarse_wait, direction=step_dir)
         else:
-            self._x_do_step(self.x_step, self.x_fine_wait)
+            self._x_do_step(self.x_step, self.x_fine_wait, direction=step_dir)
 
     def _x_evaluate_fine_tune(self):
-        e_after = abs(self.x_target - abs(self.current_fx))
+        e_after = abs(abs(self.x_target) - abs(self.current_fx))
         if e_after > self.x_error_before:
             self.current_x = self.x_hold_x
             self._publish_cartepos()
         self.x_phase = 'HOLD'
 
     def _x_evaluate_recover(self):
-        e_after = abs(self.x_target - abs(self.current_fx))
-        if e_after > self.x_error_before:
+        e_after = abs(abs(self.x_target) - abs(self.current_fx))
+        if e_after <= self.x_error_before:
+            self.x_phase = 'HOLD'
+        else:
             self.current_x = self.x_prev_x
             self._publish_cartepos()
-        self.x_phase = 'HOLD'
+            if self.x_target == 0:
+                step_dir = 'fwd' if self.current_fx < 0 else 'rev'
+            else:
+                step_dir = 'fwd' if self.x_target >= 0 else 'rev'
+            self._x_do_step(self.x_step, self.x_fine_wait, direction=step_dir)
+            self.x_phase = 'RECOVER_WAIT'
 
     def _x_do_step(self, step, wait_cycles, direction='fwd'):
         if direction == 'fwd':
@@ -654,7 +693,7 @@ class ForceControlNode(Node):
         return True
 
     def _y_hold_monitor(self):
-        error = abs(self.y_target - abs(self.current_fy))
+        error = abs(abs(self.y_target) - abs(self.current_fy))
         if error > self.y_drift:
             self.y_prev_f = abs(self.current_fy)
             self.y_prev_y = self.current_y
@@ -662,7 +701,10 @@ class ForceControlNode(Node):
             if self.y_target == 0:
                 direction = 'fwd' if self.current_fy < 0 else 'rev'
             else:
-                direction = 'fwd' if abs(self.current_fy) < self.y_target else 'rev'
+                if self.y_target >= 0:
+                    direction = 'fwd' if self.current_fy < self.y_target else 'rev'
+                else:
+                    direction = 'rev' if self.current_fy < self.y_target else 'fwd'
             self._y_do_step(self.y_step, self.y_fine_wait, direction=direction)
             self.y_phase = 'RECOVER_WAIT'
             return True
@@ -670,6 +712,7 @@ class ForceControlNode(Node):
 
     def _y_evaluate_approach(self):
         fy_abs = abs(self.current_fy)
+        y_target_abs = abs(self.y_target)
         # target=0 特殊处理：直接根据力方向步进
         if self.y_target == 0:
             if fy_abs <= self.y_tolerance:
@@ -679,9 +722,12 @@ class ForceControlNode(Node):
             else:
                 self._y_do_step(self.y_step, self.y_fine_wait, direction='fwd')
             return
-        if fy_abs >= self.y_target:
-            e_prev = abs(self.y_target - self.y_prev_f)
-            e_curr = abs(self.y_target - fy_abs)
+        # 跨越判断：正目标 force>=target，负目标 force<=target
+        crossed = (self.y_target >= 0 and self.current_fy >= self.y_target) or \
+                  (self.y_target < 0 and self.current_fy <= self.y_target)
+        if crossed:
+            e_prev = abs(y_target_abs - self.y_prev_f)
+            e_curr = abs(y_target_abs - fy_abs)
             if e_prev <= e_curr:
                 self.current_y = self.y_prev_y
                 self.y_phase = 'HOLD'
@@ -689,31 +735,40 @@ class ForceControlNode(Node):
             else:
                 self.y_error_before = e_curr
                 self.y_hold_y = self.current_y
-                self._y_do_step(self.y_step, self.y_fine_wait)
+                step_dir = 'fwd' if self.y_target >= 0 else 'rev'
+                self._y_do_step(self.y_step, self.y_fine_wait, direction=step_dir)
                 self.y_phase = 'FINE_TUNE_WAIT'
             return
 
         self.y_prev_f = fy_abs
         self.y_prev_y = self.current_y
-        fine_th = self.y_target * self.y_fine_ratio
+        fine_th = y_target_abs * self.y_fine_ratio
+        step_dir = 'fwd' if self.y_target >= 0 else 'rev'
         if fy_abs < fine_th:
-            self._y_do_step(self.y_approach_step, self.y_coarse_wait)
+            self._y_do_step(self.y_approach_step, self.y_coarse_wait, direction=step_dir)
         else:
-            self._y_do_step(self.y_step, self.y_fine_wait)
+            self._y_do_step(self.y_step, self.y_fine_wait, direction=step_dir)
 
     def _y_evaluate_fine_tune(self):
-        e_after = abs(self.y_target - abs(self.current_fy))
+        e_after = abs(abs(self.y_target) - abs(self.current_fy))
         if e_after > self.y_error_before:
             self.current_y = self.y_hold_y
             self._publish_cartepos()
         self.y_phase = 'HOLD'
 
     def _y_evaluate_recover(self):
-        e_after = abs(self.y_target - abs(self.current_fy))
-        if e_after > self.y_error_before:
+        e_after = abs(abs(self.y_target) - abs(self.current_fy))
+        if e_after <= self.y_error_before:
+            self.y_phase = 'HOLD'
+        else:
             self.current_y = self.y_prev_y
             self._publish_cartepos()
-        self.y_phase = 'HOLD'
+            if self.y_target == 0:
+                step_dir = 'fwd' if self.current_fy < 0 else 'rev'
+            else:
+                step_dir = 'fwd' if self.y_target >= 0 else 'rev'
+            self._y_do_step(self.y_step, self.y_fine_wait, direction=step_dir)
+            self.y_phase = 'RECOVER_WAIT'
 
     def _y_do_step(self, step, wait_cycles, direction='fwd'):
         if direction == 'fwd':
@@ -768,17 +823,25 @@ class ForceControlNode(Node):
                 self.z_prev_z = self.current_z
                 self.z_dwell_counter = self.grid_step_dwell
 
-            # X/Y 初始目标为 0，Z 保压后再更新
-            self.y_target = 0
-            self.y_force_limit = 5.0
-            self.y_phase = 'APPROACH'
-            self.y_prev_f = abs(self.current_fy)
-            self.y_prev_y = self.current_y
-            self.x_target = 0
-            self.x_force_limit = 5.0
-            self.x_phase = 'APPROACH'
-            self.x_prev_fy = abs(self.current_fx)
-            self.x_prev_x = self.current_x
+            # X/Y 初始目标为 0，Z 保压后再更新（不活跃的轴直接 HOLD）
+            if 'y' in self.active_axes:
+                self.y_target = 0
+                self.y_force_limit = 5.0
+                self.y_phase = 'APPROACH'
+                self.y_prev_f = abs(self.current_fy)
+                self.y_prev_y = self.current_y
+            else:
+                self.y_target = 0
+                self.y_phase = 'HOLD'
+            if 'x' in self.active_axes:
+                self.x_target = 0
+                self.x_force_limit = 5.0
+                self.x_phase = 'APPROACH'
+                self.x_prev_fy = abs(self.current_fx)
+                self.x_prev_x = self.current_x
+            else:
+                self.x_target = 0
+                self.x_phase = 'HOLD'
 
             self.state = 'FORCE_CONTROL'
             self.grid_phase = 'FORCE_CONTROL'

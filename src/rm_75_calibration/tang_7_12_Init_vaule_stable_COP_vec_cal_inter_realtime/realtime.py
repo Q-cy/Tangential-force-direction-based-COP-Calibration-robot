@@ -14,8 +14,10 @@ PLOT_ERR_HISTORY_LEN = 100     # 角度误差历史缓冲区长度
 PLOT_MAG_HISTORY_LEN = 100     # 幅值历史缓冲区长度
 
 def _yrange(data, pad=0.1):
-    if len(data) < 2: return -1, 1
-    mn, mx = min(data), max(data)
+    import math
+    clean = [v for v in data if not math.isnan(v)]
+    if len(clean) < 2: return -1, 1
+    mn, mx = min(clean), max(clean)
     r = mx - mn if mx != mn else 1
     return mn - r * pad, mx + r * pad
 
