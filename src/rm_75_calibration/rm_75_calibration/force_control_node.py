@@ -360,7 +360,7 @@ class ForceControlNode(Node):
 
     # ==================== 网格阶段辅助方法 ====================
     def _all_axes_hold(self):
-        return all(self._get_axis_phase(a) == 'HOLD' for a in self.active_axes)
+        return self.z_phase == 'HOLD' and self.y_phase == 'HOLD' and self.x_phase == 'HOLD'
 
     def _start_dwell(self):
         # 保压时间：优先用 grid_step_dwell（循环数），否则用 grid_hold_duration（秒）

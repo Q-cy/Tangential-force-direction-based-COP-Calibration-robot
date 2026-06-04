@@ -4,7 +4,7 @@
 /force_control_node:
   ros__parameters:
     # ==================== 控制模式 ====================
-    control_axes: 'xz'              # 控制轴: z / xz / yz / xyz / x / y
+    control_axes: 'yz'              # 控制轴: z / xz / yz / xyz / x / y
     realtime_script: '/home/qcy/ros2_project_ws/src/rm_75_calibration/tang_7_12_Init_vaule_stable_COP_vec_cal_inter_realtime'  # 实时显示脚本目录，'none' 禁用
 
     # ==================== 初始位姿 ====================
@@ -20,12 +20,12 @@
     movej_speed: 20                # MoveJp 关节空间规划速度
 
     # ==================== 网格遍历 ====================
-    z_force_range_min: 05.0        # Z 力目标最小值 (N)
-    z_force_range_max: 10.0        # Z 力目标最大值 (N)
+    z_force_range_min: 15.0        # Z 力目标最小值 (N)
+    z_force_range_max: 20.0        # Z 力目标最大值 (N)
     z_force_range_step: 5.0        # Z 力目标步长 (N)
     y_force_ratio: 0.2             # Y 目标力 = Z 目标 × 比例
     x_force_ratio: 0.1             # X 目标力 = Z 目标 × 比例
-    y_step_ratio: 0.1              # Y step = Z step × 比例
+    y_step_ratio: 0.2              # Y step = Z step × 比例
     x_step_ratio: 0.1              # X step = Z step × 比例
     y_direction_mode: 2            # Y方向: 1=只正, 2=只负, 3=正负都要
     x_direction_mode: 1            # X方向: 1=只正, 2=只负, 3=正负都要
