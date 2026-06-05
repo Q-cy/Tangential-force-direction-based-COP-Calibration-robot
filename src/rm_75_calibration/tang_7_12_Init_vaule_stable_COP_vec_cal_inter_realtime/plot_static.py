@@ -1,6 +1,13 @@
 """
 静态图绘制工具 —— 从 CSV 中选列、选行，画 matplotlib 图。
 
+适配修改（相比原始版本）：
+- CSV_PICK: 不同的数据文件
+- ROW_START: 2000 → 1000
+- HIGHLIGHT_VALID: 新增 valid 分段高亮显示
+- PLOT_MODE: 新增 full_analysis/plot 模式选择
+- 表头新增 adc_sum、valid 列
+
 两种用法：
   1. 直接改下面「配置区」的变量，然后运行：python plot_static.py
   2. CLI 传参覆盖配置：python plot_static.py -f data_2.csv -c rel_ms,ADC_mag -r 100:500

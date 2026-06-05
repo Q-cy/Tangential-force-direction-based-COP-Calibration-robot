@@ -1,6 +1,10 @@
 """
 数据采集模块
 功能：压力传感器/六维力传感器串口读取、解码、缓存、重连
+
+适配修改（相比原始版本）：
+- 新增 calibrate_zero_xy()：只校准 Fx、Fy（Fz 和力矩不变）
+  临时清零 zero_data[0]/[1] 读取原始值，避免 read() 返回已去皮数据
 """
 import serial
 import serial.tools.list_ports

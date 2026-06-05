@@ -1,4 +1,10 @@
 # file_name: main.py
+#
+# 适配修改（相比原始版本）：
+# - 新增 ForceDataSubscriber：订阅 /force_sensor_data 获取六维力数据
+# - 新增 PhaseSubscriber：订阅 /force_control_state 获取力控状态
+# - 新增 CopTriggerSubscriber：订阅 /cop_trigger 触发 COP 精修
+# - 力数据来源从本地串口改为 ROS2 话题
 
 import time
 import os
@@ -51,6 +57,17 @@ class PhaseSubscriber(Node):
         with self.lock:
             p = self.latest_phase
         return 'HOLD' in p or 'STEP_DWELL' in p
+
+class CopTriggerSubscriber(Node):
+    def __init__(self):
+        super().__init__('cop_trigger_subscriber')
+        self.sub = self.create_subscription(
+            String, '/cop_trigger', self._callback, 10
+        )
+    def _callback(self, msg):
+        if msg.data == 'refine':
+            COP.trigger_cop_refine()
+            print('[COP] trigger_cop_refine() called from force_control_node')
 
 def ros2_spin(executor):
     while not g_main_stop_flag.is_set() and rclpy.ok():
@@ -298,9 +315,11 @@ def main():
     buf_force = data.TimestampedBuffer(500)
     force_node = ForceDataSubscriber(buf_force)
     phase_node = PhaseSubscriber()
+    cop_trigger_node = CopTriggerSubscriber()
     executor = SingleThreadedExecutor()
     executor.add_node(force_node)
     executor.add_node(phase_node)
+    executor.add_node(cop_trigger_node)
     spin_thread = threading.Thread(target=ros2_spin, args=(executor,), daemon=True)
     spin_thread.start()
 

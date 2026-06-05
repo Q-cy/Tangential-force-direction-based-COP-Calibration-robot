@@ -1,4 +1,8 @@
 # file_name: table.py
+#
+# 适配修改（相比原始版本）：
+# - CSV 表头最后一列: "CoP_state" → "valid"（力控网格点序号）
+# - CSV 文件名: data_1.csv → data_20260604_111900.csv（时间戳命名）
 
 import os
 import csv

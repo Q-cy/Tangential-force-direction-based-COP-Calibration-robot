@@ -4,13 +4,13 @@
 /force_control_node:
   ros__parameters:
     # ==================== 控制模式 ====================
-    control_axes: 'yz'              # 控制轴: z / xz / yz / xyz / x / y
+    control_axes: 'xyz'              # 控制轴: z / xz / yz / xyz / x / y
     realtime_script: '/home/qcy/ros2_project_ws/src/rm_75_calibration/tang_7_12_Init_vaule_stable_COP_vec_cal_inter_realtime'  # 实时显示脚本目录，'none' 禁用
 
     # ==================== 初始位姿 ====================
-    start_x: 0.4310                # 起始 X 坐标 (m)
+    start_x: 0.4295                # 起始 X 坐标 (m)
     start_y: -0.0075               # 起始 Y 坐标 (m)
-    start_z: 0.175                 # 起始 Z 坐标 (m)
+    start_z: 0.173                 # 起始 Z 坐标 (m)
     orientation_x: 0.0             # 末端姿态 X 分量
     orientation_y: 1.0             # 末端姿态 Y 分量
     orientation_z: 0.0             # 末端姿态 Z 分量
@@ -20,18 +20,20 @@
     movej_speed: 20                # MoveJp 关节空间规划速度
 
     # ==================== 网格遍历 ====================
-    z_force_range_min: 15.0        # Z 力目标最小值 (N)
-    z_force_range_max: 20.0        # Z 力目标最大值 (N)
+    z_force_range_min: 10.0        # Z 力目标最小值 (N)
+    z_force_range_max: 10.0        # Z 力目标最大值 (N)
     z_force_range_step: 5.0        # Z 力目标步长 (N)
     y_force_ratio: 0.2             # Y 目标力 = Z 目标 × 比例
     x_force_ratio: 0.1             # X 目标力 = Z 目标 × 比例
-    y_step_ratio: 0.2              # Y step = Z step × 比例
+    y_step_ratio: 0.1              # Y step = Z step × 比例
     x_step_ratio: 0.1              # X step = Z step × 比例
-    y_direction_mode: 2            # Y方向: 1=只正, 2=只负, 3=正负都要
-    x_direction_mode: 1            # X方向: 1=只正, 2=只负, 3=正负都要
+    y_direction_mode: 3            # Y方向: 1=只正, 2=只负, 3=正负都要
+    x_direction_mode: 3            # X方向: 1=只正, 2=只负, 3=正负都要
     grid_hold_duration: 5.0        # 保压时长 (s)，grid_step_dwell=0 时使用
     grid_step_dwell: 500           # 保压循环数（100Hz，500=5s），0=用 grid_hold_duration
     grid_unload_dwell: 500         # 卸载等待循环数（100Hz，500=5s）
+    hold_only: false                # true=各轴独立HOLD就转换，false=全部HOLD才转换
+    enable_cop_refine: true       # true=进入XY_CONTROL时触发COP精修，false=不触发
 
     # ==================== Z 轴参数（法向力） ====================
     z_step_size: 0.00005           # 精细步长 (m)，0.05mm
@@ -62,4 +64,4 @@
     y_drift_threshold: 0.1         # HOLD 漂移阈值 (N)
     y_step_sign: 1                 # 运动方向符号
     y_start_delay: 0.0             # 启动延迟 (s)
-    y_force_tolerance: 0.2         # 力值容差 (N)
+    y_force_tolerance: 0.1         # 力值容差 (N)

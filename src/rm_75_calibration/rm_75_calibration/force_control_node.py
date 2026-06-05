@@ -14,6 +14,7 @@ from std_msgs.msg import String
 from rm_ros_interfaces.msg import Movejp, Cartepos
 import time
 import sys
+sys.path.insert(0, '/home/qcy/ros2_project_ws/src/rm_75_calibration/tang_7_12_Init_vaule_stable_COP_vec_cal_inter_realtime')
 
 
 class ForceControlNode(Node):
@@ -79,6 +80,8 @@ class ForceControlNode(Node):
         self.declare_parameter('grid_hold_duration', 5.0)
         self.declare_parameter('grid_step_dwell', 0)
         self.declare_parameter('grid_unload_dwell', 0)
+        self.declare_parameter('hold_only', True)
+        self.declare_parameter('enable_cop_refine', True)
 
         self._read_params()
 
@@ -100,6 +103,7 @@ class ForceControlNode(Node):
         self.movej_pub = self.create_publisher(Movejp, '/rm_driver/movej_p_cmd', 10)
         self.cartepos_pub = self.create_publisher(Cartepos, '/rm_driver/movep_canfd_cmd', 10)
         self.valid_pub = self.create_publisher(String, '/force_control_state', 10)
+        self.cop_trigger_pub = self.create_publisher(String, '/cop_trigger', 10)
 
         # ==================== Z 轴状态 ====================
         self.current_z = self.start_z
@@ -168,7 +172,7 @@ class ForceControlNode(Node):
         self.grid_index = 0
         self.grid_hold_start_time = None
         self.grid_dwell_start_time = None
-        self.grid_phase = 'IDLE'  # IDLE → FORCE_CONTROL → Z_DWELL → DWELL → RETURN → UNLOAD
+        self.grid_phase = 'IDLE'  # IDLE → Z_CONTROL → XY_CONTROL → DWELL → RETURN → UNLOAD
         self.grid_dwell_counter = 0
         self.grid_unload_counter = 0
         self.z_dwell_counter = 0
@@ -249,6 +253,8 @@ class ForceControlNode(Node):
         self.grid_hold_duration = self.get_parameter('grid_hold_duration').value
         self.grid_step_dwell = self.get_parameter('grid_step_dwell').value
         self.grid_unload_dwell = self.get_parameter('grid_unload_dwell').value
+        self.hold_only = self.get_parameter('hold_only').value
+        self.enable_cop_refine = self.get_parameter('enable_cop_refine').value
 
     # ==================== 回初始位置回调 ====================
     def _return_home_callback(self, msg):
@@ -307,29 +313,47 @@ class ForceControlNode(Node):
             sys.stdout.flush()
 
         # ===== 网格阶段状态机 =====
-        if self.grid_phase == 'FORCE_CONTROL':
+        if self.grid_phase == 'Z_CONTROL':
             any_publish = False
             any_publish |= self._run_z_machine()
 
-            # Z 保压计数
-            if self.z_phase == 'HOLD' and self.z_dwell_counter > 0:
-                self.z_dwell_counter -= 1
-                # Z 保压完成，更新 X/Y 为实际网格目标
-                if self.z_dwell_counter == 0:
-                    self.y_target = self._grid_y_target
-                    self.y_force_limit = max(abs(self._grid_y_target) * 3.0, 5.0)
-                    self._reset_axis('y')
-                    self.x_target = self._grid_x_target
-                    self.x_force_limit = max(abs(self._grid_x_target) * 3.0, 5.0)
-                    self._reset_axis('x')
+            # 保压计数
+            if self.hold_only:
+                # Z 到 HOLD 就进 XY_CONTROL
+                if self.z_phase == 'HOLD':
+                    self._start_xy_control()
+            else:
+                # 全部轴 HOLD 后才开始计数
+                if self._all_axes_hold():
+                    if self.z_dwell_counter > 0:
+                        self.z_dwell_counter -= 1
+                    if self.z_dwell_counter == 0:
+                        self._start_xy_control()
+                else:
+                    self.z_dwell_counter = self.grid_step_dwell
 
-            # 所有轴始终运行力控
+            # X/Y 维持 0N
             any_publish |= self._run_x_machine()
             any_publish |= self._run_y_machine()
 
-            # 全部到位 → 网格保压
-            if self._all_axes_hold() and self.z_dwell_counter <= 0:
-                self._start_dwell()
+            if any_publish:
+                self._publish_cartepos()
+
+        elif self.grid_phase == 'XY_CONTROL':
+            any_publish = False
+            any_publish |= self._run_z_machine()
+            any_publish |= self._run_x_machine()
+            any_publish |= self._run_y_machine()
+
+            # 到位 → DWELL
+            if self.hold_only:
+                # X/Y 各自到 HOLD 就进 DWELL
+                if self.x_phase == 'HOLD' and self.y_phase == 'HOLD':
+                    self._start_dwell()
+            else:
+                # 全部 HOLD 才进 DWELL
+                if self._all_axes_hold():
+                    self._start_dwell()
             if any_publish:
                 self._publish_cartepos()
 
@@ -360,7 +384,24 @@ class ForceControlNode(Node):
 
     # ==================== 网格阶段辅助方法 ====================
     def _all_axes_hold(self):
-        return self.z_phase == 'HOLD' and self.y_phase == 'HOLD' and self.x_phase == 'HOLD'
+        return all(self._get_axis_phase(a) == 'HOLD' for a in self.active_axes)
+
+    def _start_xy_control(self):
+        """Z 保压完成，更新 X/Y 目标并开始力控"""
+        if self.enable_cop_refine:
+            self.cop_trigger_pub.publish(String(data='refine'))
+        self.get_logger().info(f'[GRID] XY_CONTROL entry')
+        self.y_target = self._grid_y_target
+        self.y_force_limit = max(abs(self._grid_y_target) * 3.0, 5.0)
+        self._reset_axis('y')
+        self.x_target = self._grid_x_target
+        self.x_force_limit = max(abs(self._grid_x_target) * 3.0, 5.0)
+        self._reset_axis('x')
+        self.grid_phase = 'XY_CONTROL'
+        self.get_logger().info(
+            f'[GRID] XY_CONTROL y={self._grid_y_target:.1f} x={self._grid_x_target:.1f} '
+            f'({self.grid_index+1}/{len(self.grid_points)})'
+        )
 
     def _start_dwell(self):
         # 保压时间：优先用 grid_step_dwell（循环数），否则用 grid_hold_duration（秒）
@@ -439,7 +480,8 @@ class ForceControlNode(Node):
 
         self.grid_hold_start_time = None
         self.grid_dwell_start_time = None
-        self.grid_phase = 'FORCE_CONTROL'
+        self.grid_phase = 'Z_CONTROL'
+        self._cop_triggered_this_point = False
 
     def _get_axis_phase(self, axis):
         if axis == 'z': return self.z_phase
@@ -641,17 +683,10 @@ class ForceControlNode(Node):
 
     def _x_evaluate_recover(self):
         e_after = abs(abs(self.x_target) - abs(self.current_fx))
-        if e_after <= self.x_error_before:
-            self.x_phase = 'HOLD'
-        else:
+        if e_after > self.x_error_before:
             self.current_x = self.x_prev_x
             self._publish_cartepos()
-            if self.x_target == 0:
-                step_dir = 'fwd' if self.current_fx < 0 else 'rev'
-            else:
-                step_dir = 'fwd' if self.x_target >= 0 else 'rev'
-            self._x_do_step(self.x_step, self.x_fine_wait, direction=step_dir)
-            self.x_phase = 'RECOVER_WAIT'
+        self.x_phase = 'HOLD'
 
     def _x_do_step(self, step, wait_cycles, direction='fwd'):
         if direction == 'fwd':
@@ -758,17 +793,10 @@ class ForceControlNode(Node):
 
     def _y_evaluate_recover(self):
         e_after = abs(abs(self.y_target) - abs(self.current_fy))
-        if e_after <= self.y_error_before:
-            self.y_phase = 'HOLD'
-        else:
+        if e_after > self.y_error_before:
             self.current_y = self.y_prev_y
             self._publish_cartepos()
-            if self.y_target == 0:
-                step_dir = 'fwd' if self.current_fy < 0 else 'rev'
-            else:
-                step_dir = 'fwd' if self.y_target >= 0 else 'rev'
-            self._y_do_step(self.y_step, self.y_fine_wait, direction=step_dir)
-            self.y_phase = 'RECOVER_WAIT'
+        self.y_phase = 'HOLD'
 
     def _y_do_step(self, step, wait_cycles, direction='fwd'):
         if direction == 'fwd':
@@ -844,7 +872,8 @@ class ForceControlNode(Node):
                 self.x_phase = 'HOLD'
 
             self.state = 'FORCE_CONTROL'
-            self.grid_phase = 'FORCE_CONTROL'
+            self.grid_phase = 'Z_CONTROL'
+            self._cop_triggered_this_point = False
 
     # ==================== 发布 Cartepos ====================
     def _publish_cartepos(self):

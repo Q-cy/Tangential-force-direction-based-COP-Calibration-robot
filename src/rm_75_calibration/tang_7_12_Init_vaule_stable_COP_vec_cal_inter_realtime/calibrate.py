@@ -4,6 +4,10 @@ CoP 位移 → 切向力 标定模块（查找表版）
 存储所有标定点 (dx, dy) → (Fx, Fy)，查询时用最近邻返回对应力值。
 纯 numpy 实现，零外部依赖。
 
+适配修改（相比原始版本）：
+- 原始版本: CoP位移 + 总压力 → 三维力(delta_Force_Z, delta_Force_X, delta_Force_Y)
+- 当前版本: CoP位移 → 切向力(Fx, Fy)，输入维度从3降为2
+
 用法:
   构建: python calibrate.py <csv_path>
   应用: from calibrate import load_lookup, apply

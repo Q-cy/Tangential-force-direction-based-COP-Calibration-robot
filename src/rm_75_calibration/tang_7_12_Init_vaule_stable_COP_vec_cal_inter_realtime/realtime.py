@@ -1,4 +1,8 @@
-"""pyqtgraph 实时绘图 — GPU 渲染, 100fps"""
+"""pyqtgraph 实时绘图 — GPU 渲染, 100fps
+
+适配修改（相比原始版本）：
+- _yrange(): 过滤 NaN 值，避免 pyqtgraph setYRange 报错
+"""
 import numpy as np
 from collections import deque
 import threading
