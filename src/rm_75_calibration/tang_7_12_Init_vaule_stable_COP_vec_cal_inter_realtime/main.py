@@ -77,6 +77,7 @@ def ros2_spin(executor):
 MAIN_REALTIME_MODULE = "realtime"           # "realtime"=全显示, "realtime2"=仅压阻
 MAIN_SAVE_DIR = "/home/qcy/Project/data/2.PZT_tangential/weight/test"  # 数据保存根目录
 MAIN_CAL_MODE = "lookup"                       # "lookup"=纯查表, "fit"=纯拟合, "auto"=优先拟合回退查表
+CAL_DIM = "2D"                                 # "2D"=CoP位移→Fx,Fy; "3D"=CoP位移+总压力→Fz,Fx,Fy
 
 realtime = importlib.import_module(MAIN_REALTIME_MODULE)
 MAIN_TARGET_FPS = 100                      # 目标采集帧率
@@ -154,14 +155,14 @@ def data_loop(force_node, phase_node=None):
     cal_coef_fx = cal_coef_fy = None
     if os.path.exists(cal_bin_path):
         try:
-            cal_pts_arr, cal_fx_arr, cal_fy_arr = calibrate.load_lookup(cal_bin_path)
+            cal_pts_arr, cal_fx_arr, cal_fy_arr = calibrate.load_lookup(cal_bin_path, dim=CAL_DIM)
             cal_lut_ready_flag = True
             print(f"📐 查找表已加载: {cal_bin_path}")
         except Exception as e:
             print(f"⚠️ 查找表加载失败: {e}")
     if os.path.exists(cal_fit_path):
         try:
-            cal_coef_fx, cal_coef_fy = calibrate.load_fit_model(cal_fit_path)
+            cal_coef_fx, cal_coef_fy = calibrate.load_fit_model(cal_fit_path, dim=CAL_DIM)
             cal_fit_ready_flag = True
             print(f"📐 拟合模型已加载: {cal_fit_path}")
         except Exception as e:
@@ -234,16 +235,16 @@ def data_loop(force_node, phase_node=None):
 
         # ---- 标定 ----
         if MAIN_CAL_MODE == "fit" and press_item is not None and cal_fit_ready_flag:
-            cal_fx_val, cal_fy_val = calibrate.apply_fit(cop_delta_x_filt, cop_delta_y_filt, cal_coef_fx, cal_coef_fy)
+            cal_fx_val, cal_fy_val = calibrate.apply_fit((cop_delta_x_filt, cop_delta_y_filt), cal_coef_fx, dim=CAL_DIM)
             cal_angle_deg, cal_mag_val = angle.compute_vector_angle(cal_fx_val, cal_fy_val)
         elif MAIN_CAL_MODE == "lookup" and press_item is not None and cal_lut_ready_flag:
-            cal_fx_val, cal_fy_val = calibrate.apply(cop_delta_x_filt, cop_delta_y_filt, cal_pts_arr, cal_fx_arr, cal_fy_arr)
+            cal_fx_val, cal_fy_val = calibrate.apply((cop_delta_x_filt, cop_delta_y_filt), cal_pts_arr, cal_fx_arr, cal_fy_arr)
             cal_angle_deg, cal_mag_val = angle.compute_vector_angle(cal_fx_val, cal_fy_val)
         elif MAIN_CAL_MODE == "auto" and press_item is not None:
             if cal_fit_ready_flag:
-                cal_fx_val, cal_fy_val = calibrate.apply_fit(cop_delta_x_filt, cop_delta_y_filt, cal_coef_fx, cal_coef_fy)
+                cal_fx_val, cal_fy_val = calibrate.apply_fit((cop_delta_x_filt, cop_delta_y_filt), cal_coef_fx, dim=CAL_DIM)
             elif cal_lut_ready_flag:
-                cal_fx_val, cal_fy_val = calibrate.apply(cop_delta_x_filt, cop_delta_y_filt, cal_pts_arr, cal_fx_arr, cal_fy_arr)
+                cal_fx_val, cal_fy_val = calibrate.apply((cop_delta_x_filt, cop_delta_y_filt), cal_pts_arr, cal_fx_arr, cal_fy_arr)
             else:
                 cal_fx_val = cal_fy_val = cal_angle_deg = cal_mag_val = None
             if cal_fx_val is not None:
