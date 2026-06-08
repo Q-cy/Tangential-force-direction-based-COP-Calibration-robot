@@ -24,7 +24,7 @@ COP_SENSOR_COL_CNT = 7                  # 传感器阵列列数
 COP_POST_INIT_WINDOW_CNT = 600000        # 初始CoP确定后精修监测帧数上限
 COP_POST_INIT_STABLE_CNT = 500000        # 原始模式：精修阶段需连续保持不变的帧数
 COP_POST_INIT_STABLE_THRESH = 0.1        # 精修判据：CoP偏移距离阈值
-COP_POST_INIT_TRIGGER_CNT = 2            # 触发模式：收到触发信号后需连续保持不变的帧数
+COP_POST_INIT_TRIGGER_CNT = 5            # 触发模式：收到触发信号后需连续保持不变的帧数
 
 COP_SNAP_CENTER_X, COP_SNAP_CENTER_Y = 3.0, 5.5   # 吸附目标（阵列中心）
 COP_SNAP_RANGE_X = 0.0                # X方向吸附范围

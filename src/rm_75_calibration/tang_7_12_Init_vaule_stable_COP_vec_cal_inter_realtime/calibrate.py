@@ -147,6 +147,59 @@ def apply(query, points, fx_vals, fy_vals, fz_vals=None) -> tuple:
     return float(fx_vals[idx]), float(fy_vals[idx])
 
 
+# ==================== 离散网格插值标定 ====================
+
+def build_discrete_grid(points: np.ndarray, fx_vals: np.ndarray, fy_vals: np.ndarray):
+    """将散乱离散点构建为 (dx, dy) 规则网格，用于双线性插值"""
+    dx_vals = np.unique(np.round(points[:, 0], 6))
+    dy_vals = np.unique(np.round(points[:, 1], 6))
+
+    fx_grid = np.full((len(dy_vals), len(dx_vals)), np.nan, dtype=np.float32)
+    fy_grid = np.full((len(dy_vals), len(dx_vals)), np.nan, dtype=np.float32)
+
+    for i in range(len(points)):
+        xi = np.argmin(np.abs(dx_vals - points[i, 0]))
+        yi = np.argmin(np.abs(dy_vals - points[i, 1]))
+        fx_grid[yi, xi] = fx_vals[i]
+        fy_grid[yi, xi] = fy_vals[i]
+
+    # 填充 NaN（用最近非NaN邻居）
+    for grid in (fx_grid, fy_grid):
+        nan_mask = np.isnan(grid)
+        if np.all(nan_mask):
+            continue
+        from scipy.ndimage import distance_transform_edt
+        _, indices = distance_transform_edt(nan_mask, return_indices=True)
+        grid[nan_mask] = grid[tuple(indices[:, nan_mask])]
+
+    return dx_vals, dy_vals, fx_grid, fy_grid
+
+
+def apply_discrete(dx: float, dy: float, dx_grid: np.ndarray, dy_grid: np.ndarray,
+                   fx_grid: np.ndarray, fy_grid: np.ndarray) -> tuple:
+    """规则网格双线性插值：结果连续平滑"""
+    # 钳位到网格范围
+    dx = np.clip(dx, dx_grid[0], dx_grid[-1])
+    dy = np.clip(dy, dy_grid[0], dy_grid[-1])
+
+    # 找所在格子
+    xi = np.searchsorted(dx_grid, dx, side='right') - 1
+    yi = np.searchsorted(dy_grid, dy, side='right') - 1
+    xi = np.clip(xi, 0, len(dx_grid) - 2)
+    yi = np.clip(yi, 0, len(dy_grid) - 2)
+
+    # 归一化坐标
+    t = (dx - dx_grid[xi]) / (dx_grid[xi + 1] - dx_grid[xi]) if dx_grid[xi + 1] != dx_grid[xi] else 0.0
+    u = (dy - dy_grid[yi]) / (dy_grid[yi + 1] - dy_grid[yi]) if dy_grid[yi + 1] != dy_grid[yi] else 0.0
+
+    # 双线性插值
+    fx = float(fx_grid[yi, xi]*(1-t)*(1-u) + fx_grid[yi, xi+1]*t*(1-u) +
+               fx_grid[yi+1, xi]*(1-t)*u + fx_grid[yi+1, xi+1]*t*u)
+    fy = float(fy_grid[yi, xi]*(1-t)*(1-u) + fy_grid[yi, xi+1]*t*(1-u) +
+               fy_grid[yi+1, xi]*(1-t)*u + fy_grid[yi+1, xi+1]*t*u)
+    return fx, fy
+
+
 # ==================== 拟合标定 ====================
 
 def build_fit_model(points, fx_vals, fy_vals, fz_vals=None, dim="3D"):
