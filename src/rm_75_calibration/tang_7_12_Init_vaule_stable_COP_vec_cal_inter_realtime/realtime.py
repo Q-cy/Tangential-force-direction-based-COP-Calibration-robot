@@ -125,6 +125,7 @@ class RealTimePlot:
         self.full_fz_list, self.full_fx_list, self.full_fy_list = [], [], []
         self.full_cal_angle_list, self.full_cal_mag_list = [], []
         self.full_fx_cal_list, self.full_fy_cal_list = [], []
+        self.full_fz_cal_list = []
 
         self.init_defaults()
         self.init_history()
@@ -169,6 +170,7 @@ class RealTimePlot:
         self.raw_force_mag_history = deque(maxlen=hist_len)
         self.force_fx_cal_history = deque(maxlen=hist_len)
         self.force_fy_cal_history = deque(maxlen=hist_len)
+        self.force_fz_cal_history = deque(maxlen=hist_len)
 
     # ===== 手工箭头工具 =====
     def _make_arrow_parts(self, plot):
@@ -338,7 +340,8 @@ class RealTimePlot:
                  press_table_arr, total_press_val, force_total_mag,
                  cop_curr_x, cop_curr_y, cop_base_x, cop_base_y, cop_delta_x, cop_delta_y,
                  force_fx_val, force_fy_val, force_fz_val,
-                 cal_fx_val=None, cal_fy_val=None, cal_angle_deg=None, cal_mag_val=None,
+                 cal_fx_val=None, cal_fy_val=None, cal_fz_val=None,
+                 cal_angle_deg=None, cal_mag_val=None,
                  cop_state=0):
         with self.lock:
             self._pzt_angle_deg = pzt_angle_deg
@@ -358,6 +361,7 @@ class RealTimePlot:
             self._total_press_val = total_press_val
             self._cal_fx_val = cal_fx_val
             self._cal_fy_val = cal_fy_val
+            self._cal_fz_val = cal_fz_val
             self._cal_angle_deg = cal_angle_deg
             self._cal_mag_val = cal_mag_val
             self._cop_state = cop_state
@@ -376,13 +380,16 @@ class RealTimePlot:
             if cal_fx_val is not None:
                 self.force_fx_cal_history.append(cal_fx_val)
                 self.force_fy_cal_history.append(cal_fy_val)
+            if cal_fz_val is not None:
+                self.force_fz_cal_history.append(cal_fz_val)
 
     def append_full_data(self, rel_time_ms,
                           pzt_angle_deg, pzt_mag_val, total_press_val,
                           cop_delta_x_filt, cop_delta_y_filt,
                           force_angle_deg, force_mag_val,
                           force_fz_filt, force_fx_filt, force_fy_filt,
-                          cal_angle_deg=None, cal_mag_val=None, cal_fx_val=None, cal_fy_val=None):
+                          cal_angle_deg=None, cal_mag_val=None,
+                          cal_fx_val=None, cal_fy_val=None, cal_fz_val=None):
         with self.lock:
             self.full_time_list.append(rel_time_ms)
             self.full_adc_angle_list.append(pzt_angle_deg)
@@ -400,6 +407,7 @@ class RealTimePlot:
                 self.full_cal_mag_list.append(cal_mag_val)
                 self.full_fx_cal_list.append(cal_fx_val if cal_fx_val is not None else float('nan'))
                 self.full_fy_cal_list.append(cal_fy_val if cal_fy_val is not None else float('nan'))
+                self.full_fz_cal_list.append(cal_fz_val if cal_fz_val is not None else float('nan'))
 
     # ===== 更新 =====
     def update_all(self):
@@ -599,7 +607,10 @@ class RealTimePlot:
         if has_cal: _p(aR2, self.full_cal_mag_list, 'g--', 'Calibrated')
         aR2.set_title("Mag: Meas vs Cal"); aR2.grid(True, alpha=0.3)
         if has_cal: aR2.legend(fontsize=8)
-        _p(aR3, self.full_fz_list, 'r-', 'Fz'); aR3.set_title("Fz: Measured"); aR3.grid(True, alpha=0.3)
+        _p(aR3, self.full_fz_list, 'r-', 'Measured')
+        if has_cal: _p(aR3, self.full_fz_cal_list, 'g--', 'Calibrated')
+        aR3.set_title("Fz: Meas vs Cal"); aR3.grid(True, alpha=0.3)
+        if has_cal: aR3.legend(fontsize=8)
         _p(aR4, self.full_fx_list, 'r-', 'Measured')
         if has_cal: _p(aR4, self.full_fx_cal_list, 'g--', 'Calibrated')
         aR4.set_title("Fx: Meas vs Cal"); aR4.grid(True, alpha=0.3)

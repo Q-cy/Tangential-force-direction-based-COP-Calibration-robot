@@ -71,8 +71,10 @@ class ForceControlNode(Node):
         self.declare_parameter('z_force_range_min', 5.0)
         self.declare_parameter('z_force_range_max', 20.0)
         self.declare_parameter('z_force_range_step', 5.0)
-        self.declare_parameter('y_force_ratio', 0.2)
-        self.declare_parameter('x_force_ratio', 0.2)
+        self.declare_parameter('y_force_ratio_pos', 0.2)
+        self.declare_parameter('y_force_ratio_neg', 0.2)
+        self.declare_parameter('x_force_ratio_pos', 0.2)
+        self.declare_parameter('x_force_ratio_neg', 0.2)
         self.declare_parameter('y_step_ratio', 0.2)
         self.declare_parameter('x_step_ratio', 0.2)
         self.declare_parameter('y_direction_mode', 3)
@@ -147,22 +149,24 @@ class ForceControlNode(Node):
         for z in z_vals:
             # Y: 只在 active_axes 中时生成目标值
             if 'y' in self.active_axes:
-                y_max = z * self.y_force_ratio
                 y_vals = []
                 if self.y_direction_mode in (1, 3):  # 正
-                    y_vals += list(np.arange(0, y_max + y_step * 0.5, y_step))
+                    y_max_pos = z * self.y_force_ratio_pos
+                    y_vals += list(np.arange(0, y_max_pos + y_step * 0.5, y_step))
                 if self.y_direction_mode in (2, 3):  # 负
-                    y_vals += list(np.arange(-y_step, -y_max - y_step * 0.5, -y_step))
+                    y_max_neg = z * self.y_force_ratio_neg
+                    y_vals += list(np.arange(-y_step, -y_max_neg - y_step * 0.5, -y_step))
             else:
                 y_vals = [0]
             # X: 只在 active_axes 中时生成目标值
             if 'x' in self.active_axes:
-                x_max = z * self.x_force_ratio
                 x_vals = []
                 if self.x_direction_mode in (1, 3):  # 正
-                    x_vals += list(np.arange(0, x_max + x_step * 0.5, x_step))
+                    x_max_pos = z * self.x_force_ratio_pos
+                    x_vals += list(np.arange(0, x_max_pos + x_step * 0.5, x_step))
                 if self.x_direction_mode in (2, 3):  # 负
-                    x_vals += list(np.arange(-x_step, -x_max - x_step * 0.5, -x_step))
+                    x_max_neg = z * self.x_force_ratio_neg
+                    x_vals += list(np.arange(-x_step, -x_max_neg - x_step * 0.5, -x_step))
             else:
                 x_vals = [0]
             for y in y_vals:
@@ -244,8 +248,10 @@ class ForceControlNode(Node):
         self.z_force_range_min = self.get_parameter('z_force_range_min').value
         self.z_force_range_max = self.get_parameter('z_force_range_max').value
         self.z_force_range_step = self.get_parameter('z_force_range_step').value
-        self.y_force_ratio = self.get_parameter('y_force_ratio').value
-        self.x_force_ratio = self.get_parameter('x_force_ratio').value
+        self.y_force_ratio_pos = self.get_parameter('y_force_ratio_pos').value
+        self.y_force_ratio_neg = self.get_parameter('y_force_ratio_neg').value
+        self.x_force_ratio_pos = self.get_parameter('x_force_ratio_pos').value
+        self.x_force_ratio_neg = self.get_parameter('x_force_ratio_neg').value
         self.y_step_ratio = self.get_parameter('y_step_ratio').value
         self.x_step_ratio = self.get_parameter('x_step_ratio').value
         self.y_direction_mode = self.get_parameter('y_direction_mode').value
@@ -623,13 +629,7 @@ class ForceControlNode(Node):
             self.x_prev_fy = abs(self.current_fx)
             self.x_prev_x = self.current_x
             self.x_error_before = error
-            if self.x_target == 0:
-                direction = 'fwd' if self.current_fx < 0 else 'rev'
-            else:
-                if self.x_target >= 0:
-                    direction = 'fwd' if self.current_fx < self.x_target else 'rev'
-                else:
-                    direction = 'rev' if self.current_fx < self.x_target else 'fwd'
+            direction = 'fwd' if self.current_fx < self.x_target else 'rev'
             self._x_do_step(self.x_step, self.x_fine_wait, direction=direction)
             self.x_phase = 'RECOVER_WAIT'
             return True
@@ -733,13 +733,7 @@ class ForceControlNode(Node):
             self.y_prev_f = abs(self.current_fy)
             self.y_prev_y = self.current_y
             self.y_error_before = error
-            if self.y_target == 0:
-                direction = 'fwd' if self.current_fy < 0 else 'rev'
-            else:
-                if self.y_target >= 0:
-                    direction = 'fwd' if self.current_fy < self.y_target else 'rev'
-                else:
-                    direction = 'rev' if self.current_fy < self.y_target else 'fwd'
+            direction = 'fwd' if self.current_fy < self.y_target else 'rev'
             self._y_do_step(self.y_step, self.y_fine_wait, direction=direction)
             self.y_phase = 'RECOVER_WAIT'
             return True

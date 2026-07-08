@@ -1,13 +1,6 @@
 """
 静态图绘制工具 —— 从 CSV 中选列、选行，画 matplotlib 图。
 
-适配修改（相比原始版本）：
-- CSV_PICK: 不同的数据文件
-- ROW_START: 2000 → 1000
-- HIGHLIGHT_VALID: 新增 valid 分段高亮显示
-- PLOT_MODE: 新增 full_analysis/plot 模式选择
-- 表头新增 adc_sum、valid 列
-
 两种用法：
   1. 直接改下面「配置区」的变量，然后运行：python plot_static.py
   2. CLI 传参覆盖配置：python plot_static.py -f data_2.csv -c rel_ms,ADC_mag -r 100:500
@@ -55,16 +48,25 @@ CSV_DIR = "/home/qcy/Project/data/2.PZT_tangential/weight/test"
 #   关键词
 #     "latest:N" → 最新的 N 个文件
 #     "all"      → 全部文件
-CSV_PICK = "data_20260513_150200.csv"
+CSV_PICK = "latest:1"   # 参考项目硬编码 "COP_0611_3.csv" 是旧文件名,改为取最新一份
+
+# valid 分段显示：True=valid!=0 深色粗线(valid=0 浅色淡化)，False=统一普通样式
+HIGHLIGHT_VALID = True
+
+# 是否在高亮段首点标注数值
+SHOW_ANNOT = True
+
+# 最小力值阈值（N）：低于此值的行不参与画图和误差计算（需同时满足 valid!=0）
+FORCE_MIN = 0.2
 
 # 要绘制的列：支持列名（字符串）或列号（整数从 0 开始）
-# 例：["rel_ms", "ADC_angle", "Force_angle"] 或 [1, 100, 102]
-PLOT_COLUMNS = ["Force_cal_angle", "Force_angle"]
+# 例：["rel_ms", "ADC_angle", "Force_angle"，Fx_cal，delta_Force_X] 或 [1, 100, 102]
+PLOT_COLUMNS = ["Fy_cal", "delta_Force_Y"]
 
 # 行范围：None=全程，整数=起/止行号（不含表头）
 # 例：ROW_START=0, ROW_END=None  → 全部行
 # 例：ROW_START=100, ROW_END=500 → 第 100~500 行
-ROW_START = 2000
+ROW_START = 1000
 ROW_END = None
 
 # X 轴列名/列号（None=用第 0 列，即 timestamp）
@@ -81,7 +83,15 @@ SHARE_AXIS = True
 
 # 误差计算参考列（None=不计算误差）。设为真值列名，会对其他列计算相对于此列的误差
 # 例：ERROR_REF_COLUMN = "Force_angle"   → 计算其他列 vs Force_angle 的误差
-ERROR_REF_COLUMN = "Force_angle"
+ERROR_REF_COLUMN = "delta_Force_Y"
+
+# ==================== 模式选择 ====================
+# "full_analysis" — 5×2 子图：左列 PZT(角度/幅值/Fz/Fx/Fy)，右列 Force(真值 vs 标定)
+#                   适合查看全程数据总览和标定效果对比
+# "plot"          — 自定义列折线图：按 PLOT_COLUMNS 选列画图，支持误差标注
+#                   适合查看特定列的详细变化和数值误差
+PLOT_MODE = "full_analysis"
+
 
 # ===================================================================
 # 以下为代码，一般不需要修改
@@ -89,7 +99,7 @@ ERROR_REF_COLUMN = "Force_angle"
 
 # CSV 列名 → 索引映射（与 table.py TABLE_CSV_HEADER 一致）
 _COLUMN_NAMES = [
-    "timestamp", "rel_ms",
+    "timestamp", "rel_ms", "adc_sum",
     *(f"ch{i}" for i in range(1, 85)),
     "Fx", "Fy", "Fz", "Mx", "My", "Mz",
     "press_t", "force_t", "dt",
@@ -97,7 +107,7 @@ _COLUMN_NAMES = [
     "delta_Force_X", "delta_Force_Y", "delta_Force_Z",
     "ADC_angle", "ADC_mag", "Force_angle", "Force_mag",
     "Fx_cal", "Fy_cal", "Force_cal_mag", "Force_cal_angle",
-    "CoP_state",
+    "CoP_state", "valid",
 ]
 
 _NAME_TO_IDX = {name: idx for idx, name in enumerate(_COLUMN_NAMES)}
@@ -307,20 +317,69 @@ def plot_static(csv_paths: list, plot_cols: list, x_col, row_start=None, row_end
         x_data = data_slice[:, x_idx]
         n_cols = len(col_indices)
 
+        # valid 列：用于区分有效/无效数据段
+        valid_col_idx = None
+        if HIGHLIGHT_VALID:
+            for name in ("valid", "CoP_state"):
+                if name in [h.strip() for h in header]:
+                    valid_col_idx = [h.strip() for h in header].index(name)
+                    break
+        valid_col = data_slice[:, valid_col_idx].astype(np.float64) if valid_col_idx is not None else None
+
+        # 力值掩码：用参考列过滤小力值
+        force_ref_col = None
+        if FORCE_MIN > 0 and error_ref_col is not None:
+            ref_idx = _resolve_column(error_ref_col, header)
+            force_ref_col = data_slice[:, ref_idx].astype(np.float64)
+
         for i, ci in enumerate(col_indices):
             y_data = data_slice[:, ci]
-            valid_mask = ~np.isnan(y_data)
-            valid_x = x_data[valid_mask]
-            valid_y = y_data[valid_mask]
-            if len(valid_x) == 0:
+            nan_mask = ~np.isnan(y_data)
+            if len(x_data[nan_mask]) == 0:
                 continue
 
             col_color = plt.cm.tab10(np.linspace(0, 1, n_cols))[i] if n_cols > 1 else file_colors[file_idx]
             lbl = f"{fname}:{header[ci]}" if n_files > 1 else header[ci]
             if n_cols == 1 and n_files > 1:
                 lbl = fname
-            ax.plot(valid_x, valid_y, color=col_color, linewidth=0.8,
-                    marker='.', markersize=2, label=lbl)
+
+            if HIGHLIGHT_VALID and valid_col is not None:
+                # 分段绘制：有效数据深色粗线，无效数据浅色淡化
+                v_mask = valid_col != 0
+                if FORCE_MIN > 0 and force_ref_col is not None:
+                    v_mask = v_mask & (np.abs(force_ref_col) >= FORCE_MIN)
+                changes = np.where(np.diff(v_mask.astype(int)))[0] + 1
+                segments = np.split(np.arange(len(x_data)), changes)
+                _labeled = [False, False]
+                last_annot_x = -1e9
+                x_range = x_data[-1] - x_data[0] if len(x_data) > 1 else 1
+                for seg in segments:
+                    if len(seg) == 0:
+                        continue
+                    s, e = seg[0], seg[-1] + 1
+                    seg_valid = v_mask[s]
+                    seg_nan = nan_mask[s:e]
+                    if not np.any(seg_nan):
+                        continue
+                    lbl_use = None
+                    if seg_valid and not _labeled[1]:
+                        lbl_use = lbl; _labeled[1] = True
+                    elif not seg_valid and not _labeled[0]:
+                        lbl_use = f"{lbl} (inactive)"; _labeled[0] = True
+                    ax.plot(x_data[s:e][seg_nan], (y_data[s:e][seg_nan]), color=col_color,
+                            linewidth=2.0 if seg_valid else 0.8,
+                            alpha=1.0 if seg_valid else 0.3,
+                            marker='.', markersize=2, label=lbl_use)
+                    if SHOW_ANNOT and seg_valid and abs(x_data[s] - last_annot_x) > x_range * 0.05:
+                        ax.annotate(f"{y_data[s]:.2f}", xy=(x_data[s], y_data[s]),
+                                    xytext=(10, 10), textcoords='offset points',
+                                    fontsize=5, color=col_color,
+                                    arrowprops=dict(arrowstyle='-', color=col_color, lw=0.5),
+                                    bbox=dict(boxstyle='round,pad=0.15', facecolor='white', alpha=0.7, edgecolor='none'))
+                        last_annot_x = x_data[s]
+            else:
+                ax.plot(x_data[nan_mask], y_data[nan_mask], color=col_color, linewidth=0.8,
+                        marker='.', markersize=2, label=lbl)
 
             # ---- 误差标注 ----
             if error_ref_col is not None:
@@ -330,6 +389,10 @@ def plot_static(csv_paths: list, plot_cols: list, x_col, row_start=None, row_end
                 ref_raw = data_slice[:, ref_idx]
                 pred_raw = data_slice[:, ci]
                 pair_mask = ~np.isnan(ref_raw) & ~np.isnan(pred_raw)
+                if HIGHLIGHT_VALID and valid_col is not None:
+                    pair_mask &= (valid_col != 0)
+                if FORCE_MIN > 0 and force_ref_col is not None:
+                    pair_mask &= (np.abs(force_ref_col) >= FORCE_MIN)
                 ref_a = ref_raw[pair_mask]; pred_a = pred_raw[pair_mask]; x_a = x_data[pair_mask]
                 if len(ref_a) < 2:
                     continue
@@ -351,12 +414,12 @@ def plot_static(csv_paths: list, plot_cols: list, x_col, row_start=None, row_end
                            fontsize=6, color=col_color, ha='center', va='bottom')
 
                 # 曲线末端标 MAE / MAPE
-                results = _compute_errors(ref_raw, pred_raw)
+                results = _compute_errors(ref_a, pred_a)
                 tag = f"{fname}:{header[ci]}" if n_files > 1 else header[ci]
                 _print_error_report(results, header[ref_idx], tag)
                 all_error_results.append({"pred": tag, "ref": header[ref_idx], "results": results})
 
-                lx, ly = valid_x[-1], valid_y[-1]
+                lx, ly = x_data[nan_mask][-1], y_data[nan_mask][-1]
                 ax.annotate(f"MAE={results['MAE']:.3f}  MAPE={results['MAPE_%']:.1f}%",
                            (lx, ly), textcoords="offset points", xytext=(10, 5),
                            fontsize=6.5, color=col_color, ha='left',
@@ -383,6 +446,192 @@ def plot_static(csv_paths: list, plot_cols: list, x_col, row_start=None, row_end
     if all_error_results:
         base_dir = csv_dir or os.path.dirname(csv_paths[0])
         error_path = os.path.join(base_dir, f"{first_base}_error.csv")
+        _save_error_csv(error_path, all_error_results)
+
+
+
+def plot_full_analysis(csv_path: str, save_path=None, row_start=None, row_end=None,
+                       save_dir=None):
+    """生成 5×2 full_analysis 图，与 realtime.py plot_full_magnitude_curve 一致"""
+    all_error_results = []
+    header, data = load_csv(csv_path)
+    r0 = row_start if row_start is not None else 0
+    r1 = row_end if row_end is not None else data.shape[0]
+    data = data[r0:r1, :]
+
+    name_to_idx = {name.strip(): i for i, name in enumerate(header)}
+
+    def _col(name):
+        """按列名获取数据，不存在返回 None"""
+        idx = name_to_idx.get(name)
+        if idx is not None:
+            return data[:, idx].astype(np.float64)
+        return None
+
+    t = _col("rel_ms")
+    if t is None:
+        t = np.arange(len(data))
+
+    # 左列数据
+    adc_angle = _col("ADC_angle")
+    adc_mag = _col("ADC_mag")
+    adc_sum = _col("adc_sum")
+    cop_dx = _col("delta_CoP_X")
+    cop_dy = _col("delta_CoP_Y")
+
+    # 右列数据
+    force_angle = _col("Force_angle")
+    force_mag = _col("Force_mag")
+    force_cal_angle = _col("Force_cal_angle")
+    force_cal_mag = _col("Force_cal_mag")
+    force_fz = _col("delta_Force_Z")
+    force_fx = _col("delta_Force_X")
+    force_fy = _col("delta_Force_Y")
+    fx_cal = _col("Fx_cal")
+    fy_cal = _col("Fy_cal")
+
+    has_cal_angle = force_cal_angle is not None
+    has_cal_mag = force_cal_mag is not None
+    has_fx_cal = fx_cal is not None
+    has_fy_cal = fy_cal is not None
+
+    # valid 列：用于区分有效/无效数据段
+    valid = _col("valid")
+    if valid is None:
+        valid = np.ones(len(data))
+
+    # 有效数据掩码：valid!=0 且 力值 >= FORCE_MIN
+    v_mask = valid != 0 if HIGHLIGHT_VALID else np.ones(len(t), dtype=bool)
+    if FORCE_MIN > 0:
+        # 用各子图的参考列过滤小力值
+        _force_filters = {}
+        for name in ("Force_angle", "Force_mag", "delta_Force_X", "delta_Force_Y"):
+            col = _col(name)
+            if col is not None:
+                _force_filters[name] = col
+
+    fig, axes = plt.subplots(5, 2, figsize=(18, 24))
+    (aL1, aR1), (aL2, aR2), (aL3, aR3), (aL4, aR4), (aL5, aR5) = axes
+
+    def _p(ax, d, c, lbl, first_valid_only=False):
+        if d is None or len(d) != len(t):
+            return
+        if not HIGHLIGHT_VALID:
+            ax.plot(t, d, c, linewidth=1.0, label=lbl)
+            return
+        """分段绘制：无效数据浅色淡化，有效数据深色粗线"""
+        mask = v_mask
+        changes = np.where(np.diff(mask.astype(int)))[0] + 1
+        segments = np.split(np.arange(len(t)), changes)
+        _labeled = [False, False]
+        last_annot_x = -1e9
+        x_range = t[-1] - t[0] if len(t) > 1 else 1
+        for seg in segments:
+            if len(seg) == 0:
+                continue
+            s, e = seg[0], seg[-1] + 1
+            is_valid = mask[s]
+            if first_valid_only and not is_valid:
+                continue
+            lbl_use = None
+            if is_valid and not _labeled[1]:
+                lbl_use = lbl; _labeled[1] = True
+            elif not is_valid and not _labeled[0]:
+                lbl_use = f"{lbl} (inactive)"; _labeled[0] = True
+            ax.plot(t[s:e], d[s:e], c,
+                    linewidth=2.0 if is_valid else 0.8,
+                    alpha=1.0 if is_valid else 0.3,
+                    label=lbl_use)
+            if SHOW_ANNOT and is_valid and abs(t[s] - last_annot_x) > x_range * 0.05:
+                color = c[0] if len(c) > 0 else 'blue'
+                ax.annotate(f"{d[s]:.2f}", xy=(t[s], d[s]),
+                            xytext=(10, 10), textcoords='offset points',
+                            fontsize=5, color=color,
+                            arrowprops=dict(arrowstyle='-', color=color, lw=0.5),
+                            bbox=dict(boxstyle='round,pad=0.15', facecolor='white', alpha=0.7, edgecolor='none'))
+                last_annot_x = t[s]
+
+    # 左列：PZT
+    _p(aL1, adc_angle, 'b-', 'PZT Angle'); aL1.set_title("PZT Angle"); aL1.grid(True, alpha=0.3)
+    _p(aL2, adc_mag, 'b-', 'PZT Mag'); aL2.set_title("PZT Mag"); aL2.grid(True, alpha=0.3)
+    if adc_sum is not None:
+        _p(aL3, adc_sum, 'b-', 'PZT Fz')
+    aL3.set_title("PZT Fz"); aL3.grid(True, alpha=0.3)
+    _p(aL4, cop_dx, 'b-', 'PZT Fx'); aL4.set_title("PZT Fx"); aL4.grid(True, alpha=0.3)
+    _p(aL5, cop_dy, 'c-', 'PZT Fy'); aL5.set_title("PZT Fy"); aL5.grid(True, alpha=0.3)
+
+    # 右列：Force（含误差计算）
+    _p(aR1, force_angle, 'r-', 'Measured')
+    if has_cal_angle: _p(aR1, force_cal_angle, 'g--', 'Calibrated')
+    aR1.set_title("Angle: Meas vs Cal"); aR1.grid(True, alpha=0.3)
+    if has_cal_angle:
+        aR1.legend(fontsize=8)
+        _vm = v_mask & (np.abs(_force_filters.get("Force_angle", np.ones(len(t)))) >= FORCE_MIN) if FORCE_MIN > 0 else v_mask
+        err = _compute_errors(force_angle[_vm], force_cal_angle[_vm])
+        if "error" not in err:
+            aR1.annotate(f"MAE={err['MAE']:.2f}° MAPE={err['MAPE_%']:.1f}% R²={err['R2']:.3f}",
+                        xy=(0.02, 0.95), xycoords='axes fraction', fontsize=7,
+                        bbox=dict(boxstyle='round,pad=0.2', facecolor='wheat', alpha=0.7))
+            all_error_results.append({"pred": "Force_cal_angle", "ref": "Force_angle", "results": err})
+
+    _p(aR2, force_mag, 'r-', 'Measured')
+    if has_cal_mag: _p(aR2, force_cal_mag, 'g--', 'Calibrated')
+    aR2.set_title("Mag: Meas vs Cal"); aR2.grid(True, alpha=0.3)
+    if has_cal_mag:
+        aR2.legend(fontsize=8)
+        _vm = v_mask & (np.abs(_force_filters.get("Force_mag", np.ones(len(t)))) >= FORCE_MIN) if FORCE_MIN > 0 else v_mask
+        err = _compute_errors(force_mag[_vm], force_cal_mag[_vm])
+        if "error" not in err:
+            aR2.annotate(f"MAE={err['MAE']:.4f} MAPE={err['MAPE_%']:.1f}% R²={err['R2']:.3f}",
+                        xy=(0.02, 0.95), xycoords='axes fraction', fontsize=7,
+                        bbox=dict(boxstyle='round,pad=0.2', facecolor='wheat', alpha=0.7))
+            all_error_results.append({"pred": "Force_cal_mag", "ref": "Force_mag", "results": err})
+
+    _p(aR3, force_fz, 'r-', 'Fz'); aR3.set_title("Fz: Measured"); aR3.grid(True, alpha=0.3)
+
+    _p(aR4, force_fx, 'r-', 'Measured')
+    if has_fx_cal: _p(aR4, fx_cal, 'g--', 'Calibrated')
+    aR4.set_title("Fx: Meas vs Cal"); aR4.grid(True, alpha=0.3)
+    if has_fx_cal:
+        aR4.legend(fontsize=8)
+        _vm = v_mask & (np.abs(_force_filters.get("delta_Force_X", np.ones(len(t)))) >= FORCE_MIN) if FORCE_MIN > 0 else v_mask
+        err = _compute_errors(force_fx[_vm], fx_cal[_vm])
+        if "error" not in err:
+            aR4.annotate(f"MAE={err['MAE']:.4f} MAPE={err['MAPE_%']:.1f}% R²={err['R2']:.3f}",
+                        xy=(0.02, 0.95), xycoords='axes fraction', fontsize=7,
+                        bbox=dict(boxstyle='round,pad=0.2', facecolor='wheat', alpha=0.7))
+            all_error_results.append({"pred": "Fx_cal", "ref": "delta_Force_X", "results": err})
+
+    _p(aR5, force_fy, 'r-', 'Measured')
+    if has_fy_cal: _p(aR5, fy_cal, 'c--', 'Calibrated')
+    aR5.set_title("Fy: Meas vs Cal"); aR5.grid(True, alpha=0.3)
+    if has_fy_cal:
+        aR5.legend(fontsize=8)
+        _vm = v_mask & (np.abs(_force_filters.get("delta_Force_Y", np.ones(len(t)))) >= FORCE_MIN) if FORCE_MIN > 0 else v_mask
+        err = _compute_errors(force_fy[_vm], fy_cal[_vm])
+        if "error" not in err:
+            aR5.annotate(f"MAE={err['MAE']:.4f} MAPE={err['MAPE_%']:.1f}% R²={err['R2']:.3f}",
+                        xy=(0.02, 0.95), xycoords='axes fraction', fontsize=7,
+                        bbox=dict(boxstyle='round,pad=0.2', facecolor='wheat', alpha=0.7))
+            all_error_results.append({"pred": "Fy_cal", "ref": "delta_Force_Y", "results": err})
+
+    for row in axes:
+        for ax in row:
+            ax.set_xlabel("Time (ms)", fontsize=9)
+
+    plt.tight_layout()
+
+    if save_path is None:
+        base_dir = save_dir or os.path.dirname(csv_path)
+        base_name = os.path.splitext(os.path.basename(csv_path))[0]  # e.g. data_20260604_131142
+        save_path = os.path.join(base_dir, f"full_analysis_{base_name}.png")
+
+    plt.savefig(save_path, dpi=300)
+    print(f"📊 已保存：{save_path}")
+    plt.close(fig)
+
+    if all_error_results:
+        error_path = save_path.replace(".png", "_error.csv")
         _save_error_csv(error_path, all_error_results)
 
 
@@ -445,4 +694,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if PLOT_MODE == "full_analysis":
+        csv_paths = _resolve_pick(CSV_DIR, CSV_PICK)
+        if not csv_paths:
+            print(f"❌ 未找到匹配的 CSV 文件: dir={CSV_DIR}, pick={CSV_PICK}")
+            sys.exit(1)
+        plot_full_analysis(csv_paths[0],
+                           row_start=ROW_START,
+                           row_end=ROW_END)
+    else:
+        main()

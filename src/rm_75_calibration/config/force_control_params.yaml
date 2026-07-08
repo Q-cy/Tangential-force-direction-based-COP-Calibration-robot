@@ -1,4 +1,6 @@
+#ros2 launch rm_driver rm_75_driver.launch.py
 #colcon build --packages-select rm_75_calibration
+#ros2 launch rm_75_calibration calibration.launch.py
 
 
 /force_control_node:
@@ -20,11 +22,13 @@
     movej_speed: 20                # MoveJp 关节空间规划速度
 
     # ==================== 网格遍历 ====================
-    z_force_range_min: 15.0        # Z 力目标最小值 (N)
-    z_force_range_max: 15.0        # Z 力目标最大值 (N)
+    z_force_range_min: 5.0        # Z 力目标最小值 (N)
+    z_force_range_max: 5.0        # Z 力目标最大值 (N)
     z_force_range_step: 5.0        # Z 力目标步长 (N)
-    y_force_ratio: 0.1             # Y 目标力 = Z 目标 × 比例
-    x_force_ratio: 0.1             # X 目标力 = Z 目标 × 比例
+    y_force_ratio_pos: 0.2         # Y 正方向目标力 = Z × 比例
+    y_force_ratio_neg: 0.1         # Y 负方向目标力 = Z × 比例
+    x_force_ratio_pos: 0.1         # X 正方向目标力 = Z × 比例
+    x_force_ratio_neg: 0.1         # X 负方向目标力 = Z × 比例
     y_step_ratio: 0.1              # Y step = Z step × 比例
     x_step_ratio: 0.1              # X step = Z step × 比例
     y_direction_mode: 3            # Y方向: 1=只正, 2=只负, 3=正负都要
@@ -32,8 +36,8 @@
     grid_hold_duration: 5.0        # 保压时长 (s)，grid_step_dwell=0 时使用
     grid_step_dwell: 500           # 保压循环数（100Hz，500=5s），0=用 grid_hold_duration
     grid_unload_dwell: 500         # 卸载等待循环数（100Hz，500=5s）
-    hold_only: false                # true=各轴独立HOLD就转换，false=全部HOLD才转换
-    enable_cop_refine: true       # true=进入XY_CONTROL时触发COP精修，false=不触发
+    hold_only: false               # true=各轴独立HOLD就转换，false=全部HOLD才转换
+    enable_cop_refine: true        # true=进入XY_CONTROL时触发COP精修，false=不触发
 
     # ==================== Z 轴参数（法向力） ====================
     z_step_size: 0.00005           # 精细步长 (m)，0.05mm

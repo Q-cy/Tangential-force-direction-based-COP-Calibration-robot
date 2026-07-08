@@ -41,20 +41,17 @@ TABLE_CSV_HEADER = [  # CSV 文件表头（84通道 + 时间戳 + 力/角度/标
 
 def auto_get_csv_path(save_dir: str) -> str:
     """
-    自动生成不重复的CSV文件路径（格式：data_20260604_111900.csv）
+    自动生成不重复的CSV文件路径（格式：COP_MMDD_1.csv）
     :param save_dir: 保存目录
     :return: 完整的CSV文件路径
     """
-    import datetime
+    from datetime import datetime
     os.makedirs(save_dir, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = f"{save_dir}/data_{ts}.csv"
-    # 如果同名文件已存在，加序号
-    idx = 2
-    while os.path.exists(path):
-        path = f"{save_dir}/data_{ts}_{idx}.csv"
+    date_str = datetime.now().strftime("%m%d")
+    idx = 1
+    while os.path.exists(f"{save_dir}/COP_{date_str}_{idx}.csv"):
         idx += 1
-    return path
+    return f"{save_dir}/COP_{date_str}_{idx}.csv"
 
 def init_csv_file(file_path: str) -> tuple[csv.writer, object]:
     """

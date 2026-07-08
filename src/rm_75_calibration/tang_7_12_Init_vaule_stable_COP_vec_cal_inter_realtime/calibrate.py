@@ -4,7 +4,7 @@ CoP 位移 (+ 总压力) → 力 标定模块
 CAL_DIM="2D": 输入 (delta_CoP_X, delta_CoP_Y) → 输出 (delta_Force_X, delta_Force_Y)
 CAL_DIM="3D": 输入 (adc_sum, delta_CoP_X, delta_CoP_Y) → 输出 (delta_Force_Z, delta_Force_X, delta_Force_Y)
 
-纯 numpy 实现，零外部依赖。
+仅负责查找表 (lookup / discrete) 标定。拟合标定由 fit.py 统一处理。
 """
 
 import os
@@ -13,19 +13,22 @@ import csv
 import numpy as np
 
 # ===================== 可调参数 =====================
-CAL_CSV_PATH = "/home/qcy/Project/data/2.PZT_tangential/weight/test/data_20260605_191856.csv"
-CAL_MODE = "continuous"       # "continuous"=连续标定, "discrete"=离散标定
+CAL_TRAIN_CSV = "/home/qcy/Project/data/2.PZT_tangential/weight/test/COP_0615_6.csv"  # 训练数据（构建标定模型）
+CAL_CSV_PATH = "/home/qcy/Project/data/2.PZT_tangential/weight/test/COP_0615_7.csv"   # 被标定的 CSV
+CAL_DATA_MODE = "discrete"  # "continuous"=原始数据, "discrete"=按力值分组
+CAL_MODE = "discrete"         # "lookup"=最近邻, "discrete"=双线性插值
 CAL_DIM = "2D"                # "2D"=仅切向力(Fx,Fy), "3D"=三维力(Fz,Fx,Fy)
-CAL_DO_FIT = True             # 是否同时生成拟合模型
-CAL_FORCE_BIN = 0.2           # discrete模式的力分组间隔(N)
+CAL_FORCE_BIN = 0.5           # discrete模式的力分组间隔(N)
+CAL_TRAIN_VALID_ONLY = True    # True=构建模型时只用valid!=0的行
+CAL_OFFLINE_VALID_ONLY = True  # True=离线标定时只标定valid!=0的行
 
 
-def build_lookup_from_csv(csv_path: str, mode: str = "continuous", force_bin: float = 0.2, dim: str = "3D"):
+def build_lookup_from_csv(csv_path: str, mode: str = "continuous", force_bin: float = 0.2, dim: str = "3D", valid_only: bool = True):
     """
     读取 CSV，返回标定数据
     dim="2D": (points[N,2], fx_vals, fy_vals)
     dim="3D": (points[N,3], fz_vals, fx_vals, fy_vals)
-    过滤: CoP_state=2
+    valid_only: True=只用valid!=0的行, False=用所有行
     """
     rows = []
     with open(csv_path, "r", encoding="utf-8") as f:
@@ -33,7 +36,7 @@ def build_lookup_from_csv(csv_path: str, mode: str = "continuous", force_bin: fl
         reader.fieldnames = [name.strip() for name in reader.fieldnames]
         for row in reader:
             try:
-                if float(row.get("valid", 0)) == 0:
+                if valid_only and float(row.get("valid", 0)) == 0:
                     continue
                 dx = float(row["delta_CoP_X"])
                 dy = float(row["delta_CoP_Y"])
@@ -147,8 +150,6 @@ def apply(query, points, fx_vals, fy_vals, fz_vals=None) -> tuple:
     return float(fx_vals[idx]), float(fy_vals[idx])
 
 
-# ==================== 离散网格插值标定 ====================
-
 def build_discrete_grid(points: np.ndarray, fx_vals: np.ndarray, fy_vals: np.ndarray):
     """将散乱离散点构建为 (dx, dy) 规则网格，用于双线性插值"""
     dx_vals = np.unique(np.round(points[:, 0], 6))
@@ -200,81 +201,87 @@ def apply_discrete(dx: float, dy: float, dx_grid: np.ndarray, dy_grid: np.ndarra
     return fx, fy
 
 
-# ==================== 拟合标定 ====================
-
-def build_fit_model(points, fx_vals, fy_vals, fz_vals=None, dim="3D"):
-    """多项式拟合"""
-    if dim == "3D":
-        s = points[:, 0]; x = points[:, 1]; y = points[:, 2]
-        A = np.column_stack([np.ones(len(points)), s, x, y, s*s, s*x, s*y, x*x, x*y, y*y])
-        coef_fx, _, _, _ = np.linalg.lstsq(A, fx_vals, rcond=None)
-        coef_fy, _, _, _ = np.linalg.lstsq(A, fy_vals, rcond=None)
-        coef_fz, _, _, _ = np.linalg.lstsq(A, fz_vals, rcond=None)
-        return coef_fz, coef_fx, coef_fy
+# ==================== 离线标定 ====================
+def offline_calibrate_csv(train_csv: str, target_csv: str, dim: str = "2D", data_mode: str = "continuous", mode: str = "lookup", force_bin: float = 0.2, train_valid_only: bool = True, offline_valid_only: bool = True):
+    """用训练 CSV 构建标定模型，标定目标 CSV，写回 Fx_cal, Fy_cal 列"""
+    # 用训练数据构建标定模型
+    if dim == "2D":
+        points, fx_vals, fy_vals = build_lookup_from_csv(train_csv, mode=data_mode, force_bin=force_bin, dim="2D", valid_only=train_valid_only)
     else:
-        x = points[:, 0]; y = points[:, 1]
-        A = np.column_stack([np.ones(len(points)), x, y, x*x, x*y, y*y])
-        coef_fx, _, _, _ = np.linalg.lstsq(A, fx_vals, rcond=None)
-        coef_fy, _, _, _ = np.linalg.lstsq(A, fy_vals, rcond=None)
-        return coef_fx, coef_fy
+        points, fz_vals, fx_vals, fy_vals = build_lookup_from_csv(train_csv, mode=data_mode, force_bin=force_bin, dim="3D", valid_only=train_valid_only)
 
+    # 读取目标 CSV 全部数据
+    with open(target_csv, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        header = [name.strip() for name in reader.fieldnames]
+        rows = list(reader)
 
-def apply_fit(query, coefs, dim="3D") -> tuple:
-    """拟合标定"""
-    if dim == "3D":
-        s, x, y = query
-        basis = np.array([1, s, x, y, s*s, s*x, s*y, x*x, x*y, y*y])
-    else:
-        x, y = query
-        basis = np.array([1, x, y, x*x, x*y, y*y])
-    return tuple(float(np.dot(c, basis)) for c in coefs)
+    # 找 Fx_cal, Fy_cal 列索引
+    if "Fx_cal" not in header:
+        header.extend(["Fx_cal", "Fy_cal", "Force_cal_mag", "Force_cal_angle"])
+        for row in rows:
+            row["Fx_cal"] = ""
+            row["Fy_cal"] = ""
+            row["Force_cal_mag"] = ""
+            row["Force_cal_angle"] = ""
 
+    # discrete 模式：构建规则网格
+    disc_dx_grid = disc_dy_grid = disc_fx_grid = disc_fy_grid = None
+    if mode == "discrete":
+        disc_dx_grid, disc_dy_grid, disc_fx_grid, disc_fy_grid = build_discrete_grid(points, fx_vals, fy_vals)
 
-def save_fit_model(coefs, path: str):
-    """保存拟合系数到 .bin"""
-    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
-    with open(path, "wb") as f:
-        for c in coefs:
-            f.write(np.array(c, dtype=np.float64).tobytes())
-    print(f"  拟合模型已保存至: {path} ({os.path.getsize(path)} 字节)")
+    # 对每行应用标定
+    cnt = 0
+    for row in rows:
+        if offline_valid_only and float(row.get("valid", 0)) == 0:
+            continue
+        try:
+            dx = float(row["delta_CoP_X"])
+            dy = float(row["delta_CoP_Y"])
+        except (KeyError, ValueError):
+            continue
 
+        if mode == "discrete":
+            cal_fx, cal_fy = apply_discrete(dx, dy, disc_dx_grid, disc_dy_grid, disc_fx_grid, disc_fy_grid)
+        else:
+            cal_fx, cal_fy = apply([dx, dy], points, fx_vals, fy_vals)
 
-def load_fit_model(path: str, dim: str = "3D") -> tuple:
-    """加载拟合系数"""
-    with open(path, "rb") as f:
-        data = np.frombuffer(f.read(), dtype=np.float64)
-    if dim == "3D":
-        return data[:10], data[10:20], data[20:30]
-    return data[:6], data[6:12]
+        cal_mag = float(np.hypot(cal_fx, cal_fy))
+        cal_angle = float(np.degrees(np.arctan2(cal_fy, cal_fx + 1e-8)))
+        if cal_angle < 0:
+            cal_angle += 360
+
+        row["Fx_cal"] = f"{cal_fx:.6f}"
+        row["Fy_cal"] = f"{cal_fy:.6f}"
+        row["Force_cal_mag"] = f"{cal_mag:.6f}"
+        row["Force_cal_angle"] = f"{cal_angle:.6f}"
+        cnt += 1
+
+    # 写回 CSV
+    with open(target_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"  离线标定完成: {cnt} 行已更新 → {target_csv}")
 
 
 # ==================== 运行 ====================
 if __name__ == "__main__":
-    out_dir = os.path.dirname(CAL_CSV_PATH)
+    out_dir = os.path.dirname(CAL_TRAIN_CSV)
 
     try:
         if CAL_DIM == "3D":
             points, fz_vals, fx_vals, fy_vals = build_lookup_from_csv(
-                CAL_CSV_PATH, mode=CAL_MODE, force_bin=CAL_FORCE_BIN, dim="3D")
+                CAL_TRAIN_CSV, mode=CAL_DATA_MODE, force_bin=CAL_FORCE_BIN, dim="3D", valid_only=CAL_TRAIN_VALID_ONLY)
             save_lookup(points, fx_vals, fy_vals, os.path.join(out_dir, "cal_lookup.bin"), fz_vals=fz_vals)
-            if CAL_DO_FIT:
-                coefs = build_fit_model(points, fx_vals, fy_vals, fz_vals=fz_vals, dim="3D")
-                save_fit_model(coefs, os.path.join(out_dir, "cal_fit.bin"))
-                labels = ["1", "s", "x", "y", "s²", "sx", "sy", "x²", "xy", "y²"]
-                for name, coef in zip(["Fz", "Fx", "Fy"], coefs):
-                    terms = " + ".join(f"{c:.4f}*{l}" for c, l in zip(coef, labels))
-                    print(f"  {name} = {terms}")
         else:
             points, fx_vals, fy_vals = build_lookup_from_csv(
-                CAL_CSV_PATH, mode=CAL_MODE, force_bin=CAL_FORCE_BIN, dim="2D")
+                CAL_TRAIN_CSV, mode=CAL_DATA_MODE, force_bin=CAL_FORCE_BIN, dim="2D", valid_only=CAL_TRAIN_VALID_ONLY)
             save_lookup(points, fx_vals, fy_vals, os.path.join(out_dir, "cal_lookup.bin"))
-            if CAL_DO_FIT:
-                coefs = build_fit_model(points, fx_vals, fy_vals, dim="2D")
-                save_fit_model(coefs, os.path.join(out_dir, "cal_fit.bin"))
-                labels = ["1", "x", "y", "x²", "xy", "y²"]
-                for name, coef in zip(["Fx", "Fy"], coefs):
-                    terms = " + ".join(f"{c:.4f}*{l}" for c, l in zip(coef, labels))
-                    print(f"  {name} = {terms}")
+
+        # 离线标定：用生成的查找表回写 CSV
+        offline_calibrate_csv(CAL_TRAIN_CSV, CAL_CSV_PATH, dim=CAL_DIM, data_mode=CAL_DATA_MODE, mode=CAL_MODE, force_bin=CAL_FORCE_BIN, train_valid_only=CAL_TRAIN_VALID_ONLY, offline_valid_only=CAL_OFFLINE_VALID_ONLY)
+
     except Exception as e:
         print(f"  构建失败: {e}")
         sys.exit(1)

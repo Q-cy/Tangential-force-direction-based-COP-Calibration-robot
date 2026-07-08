@@ -19,6 +19,7 @@ import COP as COP
 import data as data
 import table as table
 import calibrate
+import fit
 import importlib
 
 import rclpy
@@ -76,8 +77,10 @@ def ros2_spin(executor):
 # ===================== 配置 =====================
 MAIN_REALTIME_MODULE = "realtime"           # "realtime"=全显示, "realtime2"=仅压阻
 MAIN_SAVE_DIR = "/home/qcy/Project/data/2.PZT_tangential/weight/test"  # 数据保存根目录
-MAIN_CAL_MODE = "discrete"                       # "lookup"=最近邻查表, "discrete"=双线性插值, "fit"=拟合, "auto"=优先拟合回退查表
-MAIN_CAL_DIM = "2D"                            # "2D"=仅切向力(Fx,Fy), "3D"=三维力(Fz,Fx,Fy)
+MAIN_CAL_MODE = "fit"                          # "lookup"=最近邻查表, "discrete"=双线性插值, "fit"=拟合, "auto"=优先拟合回退查表
+MAIN_CAL_DIM = "3D"                            # "2D"=仅切向力(Fx,Fy), "3D"=三维力(Fz,Fx,Fy)
+MAIN_REFINE_REZERO_FORCE = False               # 强制 False:力数据来自 ROS 话题,本地无 sensor_force 可写
+fit_coefs_path = "/home/qcy/Project/data/2.PZT_tangential/weight/png/fit_coefs.bin"  # fit 标定模型路径
 
 realtime = importlib.import_module(MAIN_REALTIME_MODULE)
 MAIN_TARGET_FPS = 100                      # 目标采集帧率
@@ -146,13 +149,10 @@ def data_loop(force_node, phase_node=None):
     print("🎨 绘图已打开")
     start_time_s = time.perf_counter()
 
-    # 加载标定模型（查找表 + 拟合）
+    # 加载标定模型（查找表 + fit）
     cal_bin_path = os.path.join(MAIN_SAVE_DIR, "cal_lookup.bin")
-    cal_fit_path = os.path.join(MAIN_SAVE_DIR, "cal_fit.bin")
     cal_lut_ready_flag = False
-    cal_fit_ready_flag = False
     cal_pts_arr = cal_fz_arr = cal_fx_arr = cal_fy_arr = None
-    cal_coefs = None
     disc_dx_grid = disc_dy_grid = disc_fx_grid = disc_fy_grid = None
     if os.path.exists(cal_bin_path):
         try:
@@ -161,21 +161,68 @@ def data_loop(force_node, phase_node=None):
             else:
                 cal_pts_arr, cal_fx_arr, cal_fy_arr = calibrate.load_lookup(cal_bin_path, dim="2D")
             cal_lut_ready_flag = True
-            # discrete 模式：构建规则网格
             if MAIN_CAL_MODE == "discrete":
                 disc_dx_grid, disc_dy_grid, disc_fx_grid, disc_fy_grid = calibrate.build_discrete_grid(cal_pts_arr, cal_fx_arr, cal_fy_arr)
             print(f"📐 查找表已加载: {cal_bin_path}")
         except Exception as e:
             print(f"⚠️ 查找表加载失败: {e}")
-    if os.path.exists(cal_fit_path):
+
+    # 加载 fit 模型
+    fit_type = fit_n_inputs = fit_params_list = fit_split_sign = None
+    if os.path.exists(fit_coefs_path):
         try:
-            cal_coefs = calibrate.load_fit_model(cal_fit_path, dim=MAIN_CAL_DIM)
-            cal_fit_ready_flag = True
-            print(f"📐 拟合模型已加载: {cal_fit_path}")
+            fit_type, fit_n_inputs, fit_params_list, fit_split_sign = fit.load_coefs(fit_coefs_path)
+            type_summary = ", ".join(
+                f"{p[1]}{'(split)' if p[2] else ''}" for p in fit_params_list
+            )
+            print(f"📐 fit模型已加载: {fit_coefs_path} (outputs: {type_summary})")
         except Exception as e:
-            print(f"⚠️ 拟合模型加载失败: {e}")
-    if not cal_lut_ready_flag and not cal_fit_ready_flag:
+            print(f"⚠️ fit模型加载失败: {e}")
+
+    if not cal_lut_ready_flag and fit_params_list is None:
         print("💡 未找到标定文件")
+
+    # ===================== 标定 dispatcher =====================
+    def _calibrate_select_engine():
+        """参考项目 main.py:142 的引擎选择器,fit/lookup/discrete/auto 优先级链"""
+        if MAIN_CAL_MODE == "fit":
+            if fit_params_list is not None:
+                return "fit"
+            if cal_lut_ready_flag:
+                return "calibrate"
+            return None
+        if MAIN_CAL_MODE in ("lookup", "discrete"):
+            return "calibrate" if cal_lut_ready_flag else None
+        if MAIN_CAL_MODE == "auto":
+            if fit_params_list is not None:
+                return "fit"
+            if cal_lut_ready_flag:
+                return "calibrate"
+            return None
+        return None
+
+    def _calibrate_apply(engine, total_press, dx, dy):
+        """参考项目 main.py:160 的标定应用,统一返回 (fx, fy, fz)"""
+        if engine == "fit":
+            if fit_n_inputs == 3:
+                x_inputs = [total_press, dx, dy]
+            else:
+                x_inputs = [dx, dy]
+            results = fit.apply_predict_multi(x_inputs, fit_params_list, fit_type, fit_split_sign)
+            if results is None or len(results) == 0:
+                return None, None, None
+            fz = results[2] if len(results) >= 3 else None
+            return results[0], results[1], fz
+        if engine == "calibrate":
+            if MAIN_CAL_MODE == "discrete":
+                cal_fx, cal_fy = calibrate.apply_discrete(dx, dy, disc_dx_grid, disc_dy_grid, disc_fx_grid, disc_fy_grid)
+                return cal_fx, cal_fy, None
+            if MAIN_CAL_DIM == "3D":
+                cal_fz, cal_fx, cal_fy = calibrate.apply([dx, dy], cal_pts_arr, cal_fx_arr, cal_fy_arr, fz_vals=cal_fz_arr)
+                return cal_fx, cal_fy, cal_fz
+            cal_fx, cal_fy = calibrate.apply([dx, dy], cal_pts_arr, cal_fx_arr, cal_fy_arr)
+            return cal_fx, cal_fy, None
+        return None, None, None
 
     median_filt_window = 5
     buf_cop_delta_x = deque(maxlen=median_filt_window)
@@ -240,44 +287,17 @@ def data_loop(force_node, phase_node=None):
             force_data_out = _NAN6
             force_ts_out = float('nan')
 
-        # ---- 标定 ----
-        cal_fx_val = cal_fy_val = cal_angle_deg = cal_mag_val = None
+        # ---- 标定(dispatcher 模式)----
+        cal_fx_val = cal_fy_val = cal_fz_val = cal_angle_deg = cal_mag_val = None
         if press_item is not None:
-            do_fit = MAIN_CAL_MODE == "fit" and cal_fit_ready_flag
-            do_lut = MAIN_CAL_MODE == "lookup" and cal_lut_ready_flag
-            do_discrete = MAIN_CAL_MODE == "discrete" and cal_lut_ready_flag
-            do_auto = MAIN_CAL_MODE == "auto"
-
-            if MAIN_CAL_DIM == "3D":
-                query = [total_press_val, cop_delta_x_filt, cop_delta_y_filt]
-                if do_fit:
-                    cal_fz_val, cal_fx_val, cal_fy_val = calibrate.apply_fit(query, cal_coefs, dim="3D")
-                elif do_lut:
-                    cal_fz_val, cal_fx_val, cal_fy_val = calibrate.apply(query, cal_pts_arr, cal_fx_arr, cal_fy_arr, fz_vals=cal_fz_arr)
-                elif do_discrete:
-                    cal_fx_val, cal_fy_val = calibrate.apply_discrete(cop_delta_x_filt, cop_delta_y_filt, disc_dx_grid, disc_dy_grid, disc_fx_grid, disc_fy_grid)
-                elif do_auto:
-                    if cal_fit_ready_flag:
-                        cal_fz_val, cal_fx_val, cal_fy_val = calibrate.apply_fit(query, cal_coefs, dim="3D")
-                    elif cal_lut_ready_flag:
-                        cal_fz_val, cal_fx_val, cal_fy_val = calibrate.apply(query, cal_pts_arr, cal_fx_arr, cal_fy_arr, fz_vals=cal_fz_arr)
-                if cal_fx_val is not None:
-                    cal_angle_deg, cal_mag_val = angle.compute_vector_angle(cal_fx_val, cal_fy_val)
-            else:
-                query = [cop_delta_x_filt, cop_delta_y_filt]
-                if do_fit:
-                    cal_fx_val, cal_fy_val = calibrate.apply_fit(query, cal_coefs, dim="2D")
-                elif do_lut:
-                    cal_fx_val, cal_fy_val = calibrate.apply(query, cal_pts_arr, cal_fx_arr, cal_fy_arr)
-                elif do_discrete:
-                    cal_fx_val, cal_fy_val = calibrate.apply_discrete(cop_delta_x_filt, cop_delta_y_filt, disc_dx_grid, disc_dy_grid, disc_fx_grid, disc_fy_grid)
-                elif do_auto:
-                    if cal_fit_ready_flag:
-                        cal_fx_val, cal_fy_val = calibrate.apply_fit(query, cal_coefs, dim="2D")
-                    elif cal_lut_ready_flag:
-                        cal_fx_val, cal_fy_val = calibrate.apply(query, cal_pts_arr, cal_fx_arr, cal_fy_arr)
-                if cal_fx_val is not None:
-                    cal_angle_deg, cal_mag_val = angle.compute_vector_angle(cal_fx_val, cal_fy_val)
+            engine = _calibrate_select_engine()
+            if engine is not None:
+                cal_fx_val, cal_fy_val, cal_fz_val = _calibrate_apply(
+                    engine, total_press_val,
+                    cop_delta_x_filt, cop_delta_y_filt
+                )
+            if cal_fx_val is not None:
+                cal_angle_deg, cal_mag_val = angle.compute_vector_angle(cal_fx_val, cal_fy_val)
 
         # ---- CSV ----
         press_ts = press_item["t"] if press_item is not None else float('nan')
@@ -312,7 +332,7 @@ def data_loop(force_node, phase_node=None):
             cop_curr_x, cop_curr_y, cop_base_x, cop_base_y,
             cop_delta_x_filt, cop_delta_y_filt,
             force_fx_filt, force_fy_filt, force_fz_filt,
-            cal_fx_val, cal_fy_val, cal_angle_deg, cal_mag_val,
+            cal_fx_val, cal_fy_val, cal_fz_val, cal_angle_deg, cal_mag_val,
             cop_state=cop_state,
         )
         if COP.g_cop_contact_init_flag:
@@ -322,7 +342,7 @@ def data_loop(force_node, phase_node=None):
                 cop_delta_x_filt, cop_delta_y_filt,
                 force_angle_deg, force_mag_val,
                 force_fz_filt, force_fx_filt, force_fy_filt,
-                cal_angle_deg, cal_mag_val, cal_fx_val, cal_fy_val)
+                cal_angle_deg, cal_mag_val, cal_fx_val, cal_fy_val, cal_fz_val)
 
         elapsed = time.perf_counter() - loop_start_s
         time.sleep(max(0, 1/MAIN_TARGET_FPS - elapsed))
